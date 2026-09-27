@@ -277,9 +277,62 @@ async function route() {
 }
 
 /* =========================================================
-   Übersicht
+   Kategorien (feste Listen) & kleine Bausteine
+   ========================================================= */
+const MEAL_TYPES = ['Frühstück', 'Mittagessen', 'Abendessen', 'Vorspeise', 'Beilage', 'Dessert', 'Gebäck', 'Snack', 'Getränk'];
+const CUISINES = ['Österreichisch', 'Italienisch', 'Mediterran', 'Französisch', 'Griechisch', 'Spanisch', 'Orientalisch',
+  'Asiatisch', 'Indisch', 'Mexikanisch', 'Amerikanisch', 'Sonstige'];
+const MAX_PHOTOS = 10;
+
+const starsText = (n) => (n ? '★'.repeat(n) + '☆'.repeat(5 - n) : '');
+const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return url; } };
+const tagKey = (t) => norm(t).trim();
+
+function uniqTags(list) {
+  const seen = new Set(), out = [];
+  for (const t of list) { const k = tagKey(t); if (k && !seen.has(k)) { seen.add(k); out.push(t.trim()); } }
+  return out;
+}
+
+function extractUrl(text) {
+  const m = String(text || '').match(/https?:\/\/[^\s<>"']+/i);
+  return m ? m[0].replace(/[).,;!?]+$/, '') : '';
+}
+
+function chipGroup(id, options, selected, multi = false) {
+  const sel = new Set(multi ? selected : [selected]);
+  return `<div class="chips" id="${id}" role="group">${options.map((o) =>
+    `<button type="button" class="chip" aria-pressed="${sel.has(o)}" data-v="${esc(o)}">${esc(o)}</button>`).join('')}</div>`;
+}
+
+// Macht eine Chip-Gruppe klickbar. single: nochmal tippen hebt die Auswahl auf.
+function bindChips(el, multi, onChange) {
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('.chip');
+    if (!b) return;
+    const on = b.getAttribute('aria-pressed') !== 'true';
+    if (!multi) el.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', 'false'));
+    b.setAttribute('aria-pressed', String(on));
+    onChange([...el.querySelectorAll('.chip[aria-pressed="true"]')].map((c) => c.dataset.v));
+  });
+}
+
+async function allTags() {
+  const counts = new Map();
+  for (const r of await DB.all('recipes')) for (const t of r.tags || []) {
+    const k = tagKey(t);
+    const e = counts.get(k) || { tag: t, n: 0 };
+    e.n++; counts.set(k, e);
+  }
+  return [...counts.values()].sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag, 'de')).map((e) => e.tag);
+}
+
+/* =========================================================
+   Übersicht mit Suche & Filtern
    ========================================================= */
 let listQuery = '';
+const filters = { meal: '', cuisine: '', tags: [], minRating: 0 };
+const activeFilterCount = () => (filters.meal ? 1 : 0) + (filters.cuisine ? 1 : 0) + filters.tags.length + (filters.minRating ? 1 : 0);
 
 async function viewList() {
   const recipes = (await DB.all('recipes')).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -290,12 +343,16 @@ async function viewList() {
   $app.innerHTML = `
     <div class="bar"><span></span><button class="link" id="to-backup">Backup</button></div>
     <h1 class="shelf">Rezepte${recipes.length ? `<span class="count">${recipes.length}</span>` : ''}</h1>
-    ${recipes.length ? `<input class="search" id="q" type="search" placeholder="Rezept oder Zutat suchen" value="${esc(listQuery)}" autocomplete="off">` : ''}
+    ${recipes.length ? `<div class="searchrow">
+        <input class="search" id="q" type="search" placeholder="Rezept, Zutat, Ort …" value="${esc(listQuery)}" autocomplete="off">
+        <button class="filter-btn" id="open-filter" aria-label="Filter">Filter<span id="fcount"></span></button>
+      </div>
+      <div class="chips active-filters" id="active"></div>` : ''}
     ${stale ? `<div class="notice"><span>${lastBackup ? `Letztes Backup am ${fmtDate(lastBackup)}. Seitdem gibt es Änderungen.` : 'Noch kein Backup vorhanden.'}</span>
       <button class="link strong" id="notice-backup">Sichern</button></div>` : ''}
     <ul class="list" id="list"></ul>
     ${recipes.length ? '' : `<div class="empty-state"><h2>Noch keine Rezepte</h2>
-      <p>Titel genügt fürs Erste – Zutaten, Schritte und Foto kannst du jederzeit ergänzen.</p></div>`}
+      <p>Titel genügt fürs Erste – Zutaten, Schritte und Fotos kannst du jederzeit ergänzen.</p></div>`}
     <button class="fab" id="add">Neues Rezept</button>`;
 
   document.getElementById('add').onclick = () => go('#/edit');
@@ -304,36 +361,105 @@ async function viewList() {
   if (nb) nb.onclick = () => go('#/backup');
 
   const $list = document.getElementById('list');
-  const index = recipes.map((r) => ({ r, hay: norm([r.title, ...(r.ingredients || []).map((i) => i.name || i.raw)].join(' ')) }));
+  const index = recipes.map((r) => ({
+    r,
+    tags: new Set((r.tags || []).map(tagKey)),
+    hay: norm([r.title, r.place, r.cuisine, r.mealType, r.notes, ...(r.tags || []),
+      ...(r.ingredients || []).map((i) => i.name || i.raw), r.sourceSnapshot && r.sourceSnapshot.text].join(' ')),
+  }));
+
+  function drawActive() {
+    const $a = document.getElementById('active');
+    if (!$a) return;
+    const n = activeFilterCount();
+    document.getElementById('fcount').textContent = n ? ` (${n})` : '';
+    const chips = [];
+    if (filters.meal) chips.push(['meal', filters.meal]);
+    if (filters.cuisine) chips.push(['cuisine', filters.cuisine]);
+    for (const t of filters.tags) chips.push(['tag', t]);
+    if (filters.minRating) chips.push(['rating', `ab ${'★'.repeat(filters.minRating)}`]);
+    $a.innerHTML = chips.map(([k, v]) => `<button class="chip" aria-pressed="true" data-k="${k}" data-v="${esc(v)}" aria-label="Filter ${esc(v)} entfernen">${esc(v)} ✕</button>`).join('');
+    $a.onclick = (e) => {
+      const b = e.target.closest('.chip'); if (!b) return;
+      const { k, v } = b.dataset;
+      if (k === 'meal') filters.meal = '';
+      if (k === 'cuisine') filters.cuisine = '';
+      if (k === 'rating') filters.minRating = 0;
+      if (k === 'tag') filters.tags = filters.tags.filter((t) => t !== v);
+      drawActive(); draw();
+    };
+  }
 
   async function draw() {
     const words = norm(listQuery).split(/\s+/).filter(Boolean);
-    const hits = index.filter((x) => words.every((w) => x.hay.includes(w))).map((x) => x.r);
+    const hits = index.filter((x) =>
+      words.every((w) => x.hay.includes(w)) &&
+      (!filters.meal || x.r.mealType === filters.meal) &&
+      (!filters.cuisine || x.r.cuisine === filters.cuisine) &&
+      (!filters.minRating || (x.r.rating || 0) >= filters.minRating) &&
+      filters.tags.every((t) => x.tags.has(tagKey(t)))).map((x) => x.r);
     if (recipes.length && !hits.length) {
-      $list.innerHTML = `<li class="empty-state">Nichts gefunden für „${esc(listQuery)}“.</li>`;
+      $list.innerHTML = `<li class="empty-state">Keine Treffer. Suchbegriff oder Filter lockern.</li>`;
       return;
     }
     $list.innerHTML = hits.map((r) => {
       const n = (r.ingredients || []).filter((i) => i.type === 'item').length;
-      const meta = [r.servings ? plural(r.servings, 'Portion', 'Portionen') : null, n ? plural(n, 'Zutat', 'Zutaten') : 'noch unvollständig'].filter(Boolean).join(', ');
+      const meta = [r.mealType, r.cuisine, !n && !(r.steps || []).length ? 'noch unvollständig' : null].filter(Boolean).join(', ');
       return `<li><button class="row" data-id="${esc(r.id)}">
         <span class="thumb empty" data-photo="${esc((r.photoIds || [])[0] || '')}">${esc((r.title || '?').trim().charAt(0).toUpperCase())}</span>
-        <span><span class="row-title">${esc(r.title)}</span><span class="row-meta">${esc(meta)}</span></span>
+        <span><span class="row-title">${esc(r.title)}</span>
+          ${r.rating ? `<span class="row-stars" aria-label="${r.rating} von 5 Sternen">${starsText(r.rating)}</span>` : ''}
+          ${meta ? `<span class="row-meta">${esc(meta)}</span>` : ''}</span>
       </button></li>`;
     }).join('');
     for (const el of $list.querySelectorAll('[data-photo]')) {
       const u = await photoUrl(el.dataset.photo);
-      if (u) {
-        const img = document.createElement('img');
-        img.className = 'thumb'; img.src = u; img.alt = '';
-        el.replaceWith(img);
-      }
+      if (u) { const img = document.createElement('img'); img.className = 'thumb'; img.src = u; img.alt = ''; el.replaceWith(img); }
     }
   }
+
   $list.onclick = (e) => { const b = e.target.closest('.row'); if (b) go('#/r/' + b.dataset.id); };
   const q = document.getElementById('q');
   if (q) q.oninput = () => { listQuery = q.value; draw(); };
+  const of = document.getElementById('open-filter');
+  if (of) of.onclick = async () => { if (await filterDialog(recipes)) { drawActive(); draw(); } };
+  drawActive();
   await draw();
+}
+
+async function filterDialog(recipes) {
+  const used = (key, list) => list.filter((v) => recipes.some((r) => r[key] === v));
+  const meals = used('mealType', MEAL_TYPES), cuisines = used('cuisine', CUISINES);
+  const tags = await allTags();
+  const draft = { ...filters, tags: [...filters.tags] };
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.className = 'sheet';
+    d.innerHTML = `<h3>Filter</h3>
+      ${meals.length ? `<h4>Art</h4>${chipGroup('f-meal', meals, draft.meal)}` : ''}
+      ${cuisines.length ? `<h4>Küche</h4>${chipGroup('f-cuisine', cuisines, draft.cuisine)}` : ''}
+      ${tags.length ? `<h4>Eigenschaften</h4>${chipGroup('f-tags', tags, draft.tags, true)}` : ''}
+      <h4>Bewertung</h4>${chipGroup('f-rating', ['ab ★★★', 'ab ★★★★', '★★★★★'], draft.minRating ? ['ab ★★★', 'ab ★★★★', '★★★★★'][draft.minRating - 3] : '')}
+      ${!meals.length && !cuisines.length && !tags.length ? '<p>Sobald Rezepte eine Art, Küche oder Eigenschaften haben, kannst du hier danach filtern.</p>' : ''}
+      <div class="stack" style="margin-top:20px"><button class="btn primary" value="ok">Anzeigen</button>
+      <button class="btn" value="reset">Alle Filter entfernen</button></div>`;
+    document.body.appendChild(d);
+    const bind = (id, multi, fn) => { const el = d.querySelector('#' + id); if (el) bindChips(el, multi, fn); };
+    bind('f-meal', false, (v) => { draft.meal = v[0] || ''; });
+    bind('f-cuisine', false, (v) => { draft.cuisine = v[0] || ''; });
+    bind('f-tags', true, (v) => { draft.tags = v; });
+    bind('f-rating', false, (v) => { draft.minRating = v[0] ? ['ab ★★★', 'ab ★★★★', '★★★★★'].indexOf(v[0]) + 3 : 0; });
+    d.addEventListener('click', (e) => {
+      const b = e.target.closest('button[value]'); if (b) d.close(b.value);
+    });
+    d.addEventListener('close', () => {
+      if (d.returnValue === 'ok') Object.assign(filters, draft);
+      if (d.returnValue === 'reset') Object.assign(filters, { meal: '', cuisine: '', tags: [], minRating: 0 });
+      resolve(d.returnValue === 'ok' || d.returnValue === 'reset');
+      d.remove();
+    });
+    d.showModal();
+  });
 }
 
 /* =========================================================
@@ -344,13 +470,20 @@ async function viewDetail(id) {
   if (!r) { toast('Dieses Rezept gibt es nicht mehr.'); return go('#/'); }
   const base = r.servings || null;
   let current = r.lastServings || base;
-  const hero = await photoUrl((r.photoIds || [])[0]);
+  const photos = (await Promise.all((r.photoIds || []).map(photoUrl))).filter(Boolean);
   const hasItems = (r.ingredients || []).some((i) => i.type === 'item');
+  const cls = [r.mealType, r.cuisine].filter(Boolean).join(', ');
+  const mapUrl = r.placeGeo ? `https://maps.apple.com/?ll=${r.placeGeo.lat},${r.placeGeo.lon}&q=${encodeURIComponent(r.place || 'Ort')}` : null;
 
   $app.innerHTML = `
     <div class="bar"><button class="link" id="back">‹ Rezepte</button><button class="link" id="edit">Bearbeiten</button></div>
-    ${hero ? `<div class="hero"><img src="${hero}" alt=""></div>` : ''}
+    ${photos.length ? `<div class="gallery">
+        <div class="track" id="track">${photos.map((u) => `<img src="${u}" alt="">`).join('')}</div>
+        ${photos.length > 1 ? `<span class="gcount" id="gcount">1 / ${photos.length}</span>` : ''}
+      </div>` : ''}
     <h1 class="dish">${esc(r.title)}</h1>
+    ${r.rating || cls ? `<p class="dish-meta">${r.rating ? `<span class="stars" aria-label="${r.rating} von 5 Sternen">${starsText(r.rating)}</span>` : ''}${cls ? `<span>${esc(cls)}</span>` : ''}</p>` : ''}
+    ${(r.tags || []).length ? `<div class="chips tags-read">${r.tags.map((t) => `<span class="chip static">${esc(t)}</span>`).join('')}</div>` : ''}
     ${base && hasItems ? `
       <div class="servings">
         <span class="servings-label" id="sv-label">Portionen</span>
@@ -361,10 +494,19 @@ async function viewDetail(id) {
         </div>
       </div>
       <button class="link reset" id="reset" hidden>Zurück auf ${base} (Originalrezept)</button>` : ''}
-    ${hasItems || (r.ingredients || []).length ? `<h2 class="part">Zutaten</h2><ul class="ingredients" id="ings"></ul>` : ''}
+    ${(r.ingredients || []).length ? `<h2 class="part">Zutaten</h2><ul class="ingredients" id="ings"></ul>` : ''}
     ${(r.steps || []).length ? `<h2 class="part">Zubereitung</h2><ol class="steps">${r.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
-    ${!hasItems && !(r.steps || []).length ? `<div class="empty-state"><p>Noch keine Zutaten oder Schritte erfasst.</p>
+    ${!hasItems && !(r.steps || []).length ? `<div class="empty-state"><p>Noch keine Zutaten oder Schritte erfasst.${r.sourceSnapshot?.text ? ' Unten findest du den gesicherten Text der Quelle.' : ''}</p>
       <button class="btn primary" id="complete">Jetzt ergänzen</button></div>` : ''}
+    ${r.notes ? `<h2 class="part">Notizen</h2><p class="notes">${esc(r.notes)}</p>` : ''}
+    ${r.place || r.sourceUrl || r.sourceSnapshot?.text ? `<h2 class="part">Herkunft</h2><dl class="facts">
+      ${r.place ? `<dt>Ort / Person</dt><dd>${mapUrl ? `<a href="${mapUrl}" target="_blank" rel="noopener">${esc(r.place)}</a>` : esc(r.place)}</dd>` : ''}
+      ${r.sourceUrl ? `<dt>Quelle</dt><dd><a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">${esc(hostOf(r.sourceUrl))}</a></dd>` : ''}
+      </dl>
+      ${r.sourceSnapshot?.text ? `<details class="snapshot"><summary>Gesicherter Text der Quelle${r.sourceSnapshot.savedAt ? ` vom ${fmtDate(r.sourceSnapshot.savedAt)}` : ''}</summary>
+        <p>${esc(r.sourceSnapshot.text)}</p></details>` : ''}` : ''}
+    <div class="cooked"><span id="cooked-text">${r.lastCookedAt ? `Zuletzt gekocht am ${fmtDate(r.lastCookedAt)}` : 'Noch nie als gekocht markiert'}</span>
+      <button class="link strong" id="cooked">Heute gekocht</button></div>
     <div class="actions"><button class="btn primary" id="share">Teilen</button></div>
     <p class="meta-foot">Erstellt am ${fmtDate(r.createdAt)}${r.updatedAt - r.createdAt > 6e4 ? `, zuletzt geändert am ${fmtDate(r.updatedAt)}` : ''}</p>`;
 
@@ -373,10 +515,23 @@ async function viewDetail(id) {
   const cpl = document.getElementById('complete');
   if (cpl) cpl.onclick = () => go('#/edit/' + id);
 
+  const track = document.getElementById('track'), gcount = document.getElementById('gcount');
+  if (track && gcount) track.onscroll = () => {
+    const i = Math.round(track.scrollLeft / track.clientWidth) + 1;
+    gcount.textContent = `${i} / ${photos.length}`;
+  };
+
+  document.getElementById('cooked').onclick = async () => {
+    r.lastCookedAt = Date.now();
+    await DB.put('recipes', r); await markDirty();
+    document.getElementById('cooked-text').textContent = `Zuletzt gekocht am ${fmtDate(r.lastCookedAt)}`;
+    toast('Als heute gekocht markiert.');
+  };
+
   const $ings = document.getElementById('ings');
   function drawIngs() {
     if (!$ings) return;
-    const factor = base ? current / base : 1;
+    const factor = base && current ? current / base : 1;
     $ings.innerHTML = (r.ingredients || []).map((ing) => {
       const x = renderIngredient(ing, factor);
       if (x.section) return `<li class="section">${esc(x.text)}</li>`;
@@ -429,6 +584,8 @@ function recipeText(r, servings) {
     out.push('', 'Zubereitung');
     r.steps.forEach((s, i) => out.push(`${i + 1}. ${s}`));
   }
+  if (r.notes) out.push('', 'Notizen', r.notes);
+  if (r.sourceUrl) out.push('', `Quelle: ${r.sourceUrl}`);
   return out.join('\n');
 }
 
@@ -452,7 +609,7 @@ async function shareRecipe(r, servings) {
       const d = document.createElement('dialog');
       d.innerHTML = `<h3>Rezept teilen</h3>
         <p>Mit Foto klappt es in Nachrichten und Mail. WhatsApp verschickt dann manchmal nur das Bild – dort lieber „Nur Text“.</p>
-        <div class="stack"><button class="btn primary" value="photo">Mit Foto teilen</button>
+        <div class="stack"><button class="btn primary" value="photo">Mit Titelbild teilen</button>
         <button class="btn" value="text">Nur Text teilen</button>
         <button class="btn" value="">Abbrechen</button></div>`;
       document.body.appendChild(d);
@@ -471,6 +628,28 @@ async function shareRecipe(r, servings) {
 }
 
 /* =========================================================
+   Ort bestimmen (nur auf Knopfdruck)
+   ========================================================= */
+function currentPosition() {
+  return new Promise((res, rej) => {
+    if (!navigator.geolocation) return rej(new Error('Standort wird nicht unterstützt.'));
+    navigator.geolocation.getCurrentPosition(
+      (p) => res({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6) }),
+      (e) => rej(new Error(e.code === 1 ? 'Standortzugriff wurde nicht erlaubt. In den iOS-Einstellungen unter Datenschutz → Ortungsdienste → Safari-Websites freigeben.' : 'Standort konnte nicht bestimmt werden.')),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
+  });
+}
+
+async function placeName({ lat, lon }) {
+  const u = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1&accept-language=de`;
+  const j = await (await fetch(u)).json();
+  const a = j.address || {};
+  const town = a.city || a.town || a.village || a.municipality || a.county || '';
+  const name = j.name && j.name !== town ? j.name : '';
+  return [name, town].filter(Boolean).join(', ');
+}
+
+/* =========================================================
    Anlegen / Bearbeiten
    ========================================================= */
 async function viewEdit(id) {
@@ -479,14 +658,19 @@ async function viewEdit(id) {
   const r = existing || {
     id: uid(), schema: SCHEMA, title: '', servings: 4, lastServings: null,
     ingredients: [], steps: [], photoIds: [],
-    // Felder für Phase 2 – schon im Datenmodell, damit spätere Versionen nichts migrieren müssen
-    sourceUrl: '', place: '', rating: null, tags: [], cuisine: '', mealType: '', notes: '',
+    sourceUrl: '', sourceSnapshot: null, place: '', placeGeo: null, rating: null, tags: [], cuisine: '', mealType: '', notes: '',
     createdAt: Date.now(), updatedAt: Date.now(), lastCookedAt: null,
   };
-  let photoBlob = null;        // neu gewähltes Foto
-  let photoRemoved = false;
-  const oldPhotoId = (r.photoIds || [])[0] || null;
-  const oldPhoto = await photoUrl(oldPhotoId);
+
+  // Arbeitskopie der Fotos: bestehende {id,url} oder neue {blob,url}; Reihenfolge = erstes ist Titelbild
+  const photos = [];
+  for (const pid of r.photoIds || []) { const u = await photoUrl(pid); if (u) photos.push({ id: pid, url: u }); }
+  const removedIds = new Set();
+  let tags = [...(r.tags || [])];
+  let rating = r.rating || 0;
+  let mealType = r.mealType || '', cuisine = r.cuisine || '';
+  let placeGeo = r.placeGeo || null;
+  const knownTags = await allTags();
 
   $app.innerHTML = `
     <div class="bar">
@@ -498,17 +682,23 @@ async function viewEdit(id) {
       <input type="text" class="title-input" id="title" value="${esc(r.title)}" placeholder="z. B. Kaspressknödel" enterkeyhint="done">
       <div class="error" id="title-err" hidden>Ein Titel reicht zum Sichern – aber ohne geht es nicht.</div>
     </label>
-    <div class="field"><span>Foto</span>
-      <label class="photo-pick" id="pick">
-        <span id="pick-hint">Foto aufnehmen oder auswählen</span>
-        ${oldPhoto ? `<img src="${oldPhoto}" alt="">` : ''}
-        <input type="file" accept="image/*" id="photo" aria-label="Foto wählen">
-      </label>
-      <div class="photo-tools"><small id="photo-info"></small><button class="link danger" id="rm-photo" ${oldPhoto ? '' : 'hidden'}>Foto entfernen</button></div>
+
+    <div class="field"><span>Quelle</span>
+      <div class="inline-wide">
+        <input type="url" id="url" value="${esc(r.sourceUrl)}" placeholder="Link zu Rezeptseite oder Post" autocomplete="off" autocapitalize="off">
+        <button type="button" class="btn slim" id="paste">Einfügen</button>
+      </div>
+      <textarea id="snap" class="snap" placeholder="Rezepttext von der Seite hier einfügen – bleibt erhalten, auch wenn der Link verschwindet.">${esc(r.sourceSnapshot?.text || '')}</textarea>
+      <small>„Einfügen“ übernimmt Link und Text aus der Zwischenablage. Tipp: Bei Instagram & Co. Beschreibung kopieren und hier einfügen.</small>
     </div>
+
+    <div class="field"><span>Fotos</span>
+      <div class="photo-grid" id="pgrid"></div>
+      <small id="photo-info">Das erste Foto ist das Titelbild.</small>
+    </div>
+
     <label class="field"><span>Portionen im Originalrezept</span>
       <div class="inline"><input type="number" id="servings" inputmode="numeric" min="1" max="99" value="${r.servings ?? ''}"></div>
-      <small>Grundlage für das Umrechnen auf mehr oder weniger Personen.</small>
     </label>
     <label class="field"><span>Zutaten</span>
       <textarea id="ings" placeholder="200 g Mehl&#10;2 Eier&#10;1 Prise Salz&#10;&#10;Für die Sauce:&#10;1 Dose Tomaten">${esc(ingredientsToText(r.ingredients))}</textarea>
@@ -517,62 +707,168 @@ async function viewEdit(id) {
     <label class="field"><span>Zubereitung</span>
       <textarea id="steps" placeholder="Einen Schritt pro Zeile – oder Absätze durch eine Leerzeile trennen.">${esc((r.steps || []).join('\n\n'))}</textarea>
     </label>
+
+    <div class="field"><span>Bewertung</span>
+      <div class="rate" id="rate" role="radiogroup" aria-label="Bewertung">${[1, 2, 3, 4, 5].map((n) =>
+        `<button type="button" role="radio" data-n="${n}" aria-label="${n} von 5">★</button>`).join('')}</div>
+    </div>
+    <div class="field"><span>Art</span>${chipGroup('meal', MEAL_TYPES, mealType)}</div>
+    <div class="field"><span>Küche</span>${chipGroup('cuisine', CUISINES, cuisine)}</div>
+    <div class="field"><span>Eigenschaften</span>
+      <div class="chips" id="tags"></div>
+      <input type="text" id="tag-in" placeholder="Neue Eigenschaft, z. B. scharf" enterkeyhint="done" autocomplete="off">
+      <div class="chips suggest" id="tag-sug"></div>
+    </div>
+
+    <div class="field"><span>Ort, Lokal oder Person</span>
+      <div class="inline-wide">
+        <input type="text" id="place" value="${esc(r.place)}" placeholder="z. B. Gasthaus Bauer, Linz – oder: Mama">
+        <button type="button" class="btn slim" id="locate">Hier</button>
+      </div>
+      <small id="place-info">${placeGeo ? 'Mit Kartenposition gespeichert.' : '„Hier“ schlägt das Lokal an deinem aktuellen Standort vor.'}</small>
+    </div>
+    <label class="field"><span>Notizen</span>
+      <textarea id="notes" class="short" placeholder="Variationen, was beim nächsten Mal anders">${esc(r.notes || '')}</textarea>
+    </label>
     ${existing ? `<div class="actions"><button class="btn danger" id="delete">Rezept löschen</button></div>` : ''}`;
 
   const $title = document.getElementById('title');
   if (!existing) setTimeout(() => $title.focus(), 50);
-  const $pick = document.getElementById('pick'), $info = document.getElementById('photo-info'), $rm = document.getElementById('rm-photo');
-  const $hint = document.getElementById('pick-hint');
-  if (oldPhoto) $hint.hidden = true;
 
-  document.getElementById('photo').onchange = async (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
-    $info.textContent = 'Foto wird verkleinert …';
-    try {
-      photoBlob = await compressImage(f);
-      photoRemoved = false;
-      const u = URL.createObjectURL(photoBlob);
-      $pick.querySelector('img')?.remove();
-      const img = document.createElement('img'); img.src = u; img.alt = '';
-      $pick.insertBefore(img, $pick.querySelector('input'));
-      $hint.hidden = true; $rm.hidden = false;
-      $info.textContent = `${Math.round(photoBlob.size / 1024)} KB`;
-    } catch (err) {
-      $info.textContent = err.message;
+  /* --- Fotos --- */
+  const $grid = document.getElementById('pgrid'), $pinfo = document.getElementById('photo-info');
+  function drawPhotos() {
+    $grid.innerHTML = photos.map((p, i) => `<div class="pcell">
+        <img src="${p.url}" alt="">
+        ${i === 0 ? '<span class="cover">Titelbild</span>' : `<button type="button" class="pbtn make-cover" data-i="${i}" >Als Titelbild</button>`}
+        <button type="button" class="pbtn del" data-i="${i}" aria-label="Foto entfernen">✕</button>
+      </div>`).join('') +
+      (photos.length < MAX_PHOTOS ? `<label class="pcell add">+<span>Foto</span><input type="file" accept="image/*" multiple id="photo-in" aria-label="Fotos hinzufügen"></label>` : '');
+    const inp = document.getElementById('photo-in');
+    if (inp) inp.onchange = async (e) => {
+      const files = [...e.target.files].slice(0, MAX_PHOTOS - photos.length);
+      $pinfo.textContent = 'Fotos werden verkleinert …';
+      for (const f of files) {
+        try { const blob = await compressImage(f); photos.push({ blob, url: URL.createObjectURL(blob) }); }
+        catch (err) { toast(err.message); }
+      }
+      $pinfo.textContent = 'Das erste Foto ist das Titelbild.';
+      drawPhotos();
+    };
+  }
+  $grid.onclick = (e) => {
+    const b = e.target.closest('.pbtn'); if (!b) return;
+    const i = +b.dataset.i;
+    if (b.classList.contains('del')) { const [p] = photos.splice(i, 1); if (p.id) removedIds.add(p.id); }
+    else { const [p] = photos.splice(i, 1); photos.unshift(p); }
+    drawPhotos();
+  };
+  drawPhotos();
+
+  /* --- Quelle einfügen --- */
+  const $url = document.getElementById('url'), $snap = document.getElementById('snap');
+  document.getElementById('paste').onclick = async () => {
+    let text = '';
+    try { text = await navigator.clipboard.readText(); } catch (_) { return toast('Kein Zugriff auf die Zwischenablage. Lange ins Feld tippen und „Einsetzen“ wählen.'); }
+    if (!text.trim()) return toast('Die Zwischenablage ist leer.');
+    const url = extractUrl(text);
+    const rest = url ? text.replace(url, '').trim() : text.trim();
+    if (url) $url.value = url;
+    if (rest.length > 30) $snap.value = $snap.value.trim() ? $snap.value.trim() + '\n\n' + rest : rest;
+    else if (!url) $snap.value = ($snap.value.trim() ? $snap.value.trim() + '\n\n' : '') + rest;
+    if (!$title.value.trim() && rest) {
+      const first = rest.split('\n')[0].trim();
+      if (first.length > 2 && first.length <= 70) $title.value = first;
     }
+    toast(url ? 'Link übernommen.' : 'Text übernommen.');
   };
-  $rm.onclick = (e) => {
-    e.preventDefault();
-    photoBlob = null; photoRemoved = true;
-    $pick.querySelector('img')?.remove();
-    $hint.hidden = false; $rm.hidden = true; $info.textContent = '';
-    document.getElementById('photo').value = '';
+
+  /* --- Bewertung --- */
+  const $rate = document.getElementById('rate');
+  const drawRate = () => $rate.querySelectorAll('button').forEach((b) => {
+    const n = +b.dataset.n; b.classList.toggle('on', n <= rating); b.setAttribute('aria-checked', String(n === rating));
+  });
+  $rate.onclick = (e) => { const b = e.target.closest('button'); if (!b) return; const n = +b.dataset.n; rating = rating === n ? 0 : n; drawRate(); };
+  drawRate();
+
+  /* --- Art & Küche --- */
+  bindChips(document.getElementById('meal'), false, (v) => { mealType = v[0] || ''; });
+  bindChips(document.getElementById('cuisine'), false, (v) => { cuisine = v[0] || ''; });
+
+  /* --- Eigenschaften --- */
+  const $tags = document.getElementById('tags'), $tagIn = document.getElementById('tag-in'), $sug = document.getElementById('tag-sug');
+  function drawTags() {
+    $tags.innerHTML = tags.map((t, i) => `<button type="button" class="chip" aria-pressed="true" data-i="${i}" aria-label="${esc(t)} entfernen">${esc(t)} ✕</button>`).join('');
+    const have = new Set(tags.map(tagKey)), q = tagKey($tagIn.value);
+    const sug = knownTags.filter((t) => !have.has(tagKey(t)) && (!q || tagKey(t).includes(q))).slice(0, 12);
+    $sug.innerHTML = sug.map((t) => `<button type="button" class="chip" data-v="${esc(t)}">+ ${esc(t)}</button>`).join('');
+  }
+  const addTag = (t) => { t = t.replace(/,/g, ' ').trim(); if (t) { tags = uniqTags([...tags, t]); } $tagIn.value = ''; drawTags(); };
+  $tags.onclick = (e) => { const b = e.target.closest('.chip'); if (b) { tags.splice(+b.dataset.i, 1); drawTags(); } };
+  $sug.onclick = (e) => { const b = e.target.closest('.chip'); if (b) addTag(b.dataset.v); };
+  $tagIn.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag($tagIn.value); } };
+  $tagIn.oninput = () => { if ($tagIn.value.includes(',')) addTag($tagIn.value); else drawTags(); };
+  $tagIn.onblur = () => { if ($tagIn.value.trim()) addTag($tagIn.value); };
+  drawTags();
+
+  /* --- Ort --- */
+  const $place = document.getElementById('place'), $pInfo = document.getElementById('place-info');
+  document.getElementById('locate').onclick = async (e) => {
+    const btn = e.currentTarget; btn.disabled = true;
+    $pInfo.textContent = 'Standort wird bestimmt …';
+    try {
+      placeGeo = await currentPosition();
+      try {
+        const name = await placeName(placeGeo);
+        if (name) $place.value = name;
+        $pInfo.textContent = name ? 'Vorschlag übernommen – bei Bedarf anpassen.' : 'Position gespeichert, kein Name gefunden. Bitte Namen eintragen.';
+      } catch (_) {
+        $pInfo.textContent = 'Position gespeichert. Ohne Internet kein Namensvorschlag – bitte Namen eintragen.';
+      }
+    } catch (err) {
+      $pInfo.textContent = err.message;
+    } finally { btn.disabled = false; }
   };
+  $place.oninput = () => { if (!$place.value.trim()) { placeGeo = null; $pInfo.textContent = '„Hier“ schlägt das Lokal an deinem aktuellen Standort vor.'; } };
 
   document.getElementById('cancel').onclick = () => go(existing ? '#/r/' + r.id : '#/');
 
   document.getElementById('save').onclick = async () => {
+    if ($tagIn.value.trim()) addTag($tagIn.value);
     const title = $title.value.trim();
-    if (!title) { document.getElementById('title-err').hidden = false; $title.focus(); return; }
+    if (!title) { document.getElementById('title-err').hidden = false; $title.focus(); $title.scrollIntoView({ block: 'center' }); return; }
     const sv = parseInt(document.getElementById('servings').value, 10);
     const newServings = sv > 0 ? Math.min(sv, 99) : null;
-    if (newServings !== r.servings) r.lastServings = null; // Basis geändert -> Skalierung zurücksetzen
+    if (newServings !== r.servings) r.lastServings = null;
     r.title = title;
     r.servings = newServings;
     r.ingredients = parseIngredients(document.getElementById('ings').value);
     r.steps = parseSteps(document.getElementById('steps').value);
+
+    const url = $url.value.trim();
+    r.sourceUrl = url && !/^https?:\/\//i.test(url) ? 'https://' + url : url;
+    const snapText = $snap.value.trim();
+    r.sourceSnapshot = snapText
+      ? (r.sourceSnapshot && r.sourceSnapshot.text === snapText ? r.sourceSnapshot : { text: snapText, savedAt: Date.now() })
+      : null;
+    r.place = $place.value.trim();
+    r.placeGeo = r.place ? placeGeo : null;
+    r.rating = rating || null;
+    r.mealType = mealType; r.cuisine = cuisine;
+    r.tags = tags;
+    r.notes = document.getElementById('notes').value.trim();
     r.updatedAt = Date.now();
 
-    if (photoBlob) {
+    const ids = [];
+    for (const p of photos) {
+      if (p.id) { ids.push(p.id); continue; }
       const pid = uid();
-      await DB.put('photos', { id: pid, blob: photoBlob, type: 'image/jpeg' });
-      r.photoIds = [pid];
-      if (oldPhotoId) await DB.del('photos', oldPhotoId);
-    } else if (photoRemoved && oldPhotoId) {
-      r.photoIds = [];
-      await DB.del('photos', oldPhotoId);
+      await DB.put('photos', { id: pid, blob: p.blob, type: 'image/jpeg' });
+      ids.push(pid);
     }
+    for (const pid of removedIds) await DB.del('photos', pid);
+    r.photoIds = ids;
+
     await DB.put('recipes', r);
     await markDirty();
     requestPersistence();
@@ -583,7 +879,7 @@ async function viewEdit(id) {
 
   const del = document.getElementById('delete');
   if (del) del.onclick = async () => {
-    if (!(await confirmDialog('Rezept löschen?', `„${r.title}“ wird mit Foto gelöscht. Das lässt sich nur über ein Backup wiederherstellen.`, 'Löschen', true))) return;
+    if (!(await confirmDialog('Rezept löschen?', `„${r.title}“ wird mit allen Fotos gelöscht. Das lässt sich nur über ein Backup wiederherstellen.`, 'Löschen', true))) return;
     for (const pid of r.photoIds || []) await DB.del('photos', pid);
     await DB.del('recipes', r.id);
     await markDirty();

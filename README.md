@@ -1,4 +1,4 @@
-# Rezepte – MVP
+# Rezepte – Phase 2
 
 Persönliches Rezeptbuch als PWA. Keine Abhängigkeiten, kein Build-Schritt.
 
@@ -10,6 +10,15 @@ Persönliches Rezeptbuch als PWA. Keine Abhängigkeiten, kein Build-Schritt.
 - Backup als eine JSON-Datei (inkl. Fotos) + Import mit Zusammenführen; Hinweis in der Übersicht, wenn seit 7 Tagen kein Backup trotz Änderungen
 
 Das Datenmodell enthält die Phase-2-Felder (Quelle, Ort, Bewertung, Tags, Küche, Art, Notizen) bereits, und Fotos liegen als Liste – mehrere Fotos brauchen später keine Migration.
+
+## Neu in Phase 2
+- Bis zu 10 Fotos pro Rezept, eines als Titelbild; Galerie zum Wischen
+- Quelle: Link + gesicherter Text („Einfügen“ übernimmt beides aus der Zwischenablage)
+- Ort, Lokal oder Person – „Hier“ schlägt das Lokal am aktuellen Standort vor (OpenStreetMap), mit Link zu Apple Karten
+- Bewertung 1–5 Sterne, frei definierbare Eigenschaften, Art und Küche (feste Listen)
+- Filter nach Art, Küche, Eigenschaften und Mindestbewertung; Suche durchsucht auch Ort, Notizen und Quelltext
+- Notizen und „Heute gekocht“
+- Alte Backups lassen sich weiterhin einspielen
 
 ## Zutaten-Eingabe
 Eine Zutat pro Zeile, Menge zuerst: `200 g Mehl`, `2 Eier`, `1/2 TL Salz`, `1,5 l Milch`, `2-3 Zehen Knoblauch`, `Salz, Pfeffer`.
