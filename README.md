@@ -1,4 +1,4 @@
-# Rezepte – Phase 2
+# Rezepte – Phase 2.1
 
 Persönliches Rezeptbuch als PWA. Keine Abhängigkeiten, kein Build-Schritt.
 
@@ -19,6 +19,10 @@ Das Datenmodell enthält die Phase-2-Felder (Quelle, Ort, Bewertung, Tags, Küch
 - Filter nach Art, Küche, Eigenschaften und Mindestbewertung; Suche durchsucht auch Ort, Notizen und Quelltext
 - Notizen und „Heute gekocht“
 - Alte Backups lassen sich weiterhin einspielen
+
+## Neu in Phase 2.1
+- Einstellungen (Zahnrad): eigener Name, Überschrift wird z. B. „Tom’s Rezepte“
+- Neues App-Icon (Kochtopf)
 
 ## Zutaten-Eingabe
 Eine Zutat pro Zeile, Menge zuerst: `200 g Mehl`, `2 Eier`, `1/2 TL Salz`, `1,5 l Milch`, `2-3 Zehen Knoblauch`, `Salz, Pfeffer`.

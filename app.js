@@ -268,6 +268,7 @@ async function route() {
     if (view === 'r' && id) return await viewDetail(id);
     if (view === 'edit') return await viewEdit(id || null);
     if (view === 'backup') return await viewBackup();
+    if (view === 'settings') return await viewSettings();
     return await viewList();
   } catch (err) {
     console.error(err);
@@ -336,13 +337,15 @@ const activeFilterCount = () => (filters.meal ? 1 : 0) + (filters.cuisine ? 1 : 
 
 async function viewList() {
   const recipes = (await DB.all('recipes')).sort((a, b) => b.updatedAt - a.updatedAt);
+  const ownerName = await DB.getMeta('ownerName', '');
   const lastBackup = await DB.getMeta('lastBackupAt');
   const dirty = await DB.getMeta('changedSinceBackup', false);
   const stale = recipes.length > 0 && dirty && (!lastBackup || Date.now() - lastBackup > 7 * 864e5);
 
   $app.innerHTML = `
-    <div class="bar"><span></span><button class="link" id="to-backup">Backup</button></div>
-    <h1 class="shelf">Rezepte${recipes.length ? `<span class="count">${recipes.length}</span>` : ''}</h1>
+    <div class="bar"><span></span><span class="bar-right"><button class="link" id="to-backup">Backup</button>
+      <button class="icon-btn" id="to-settings" aria-label="Einstellungen">${GEAR_SVG}</button></span></div>
+    <h1 class="shelf">${esc(bookTitle(ownerName))}${recipes.length ? `<span class="count">${recipes.length}</span>` : ''}</h1>
     ${recipes.length ? `<div class="searchrow">
         <input class="search" id="q" type="search" placeholder="Rezept, Zutat, Ort …" value="${esc(listQuery)}" autocomplete="off">
         <button class="filter-btn" id="open-filter" aria-label="Filter">Filter<span id="fcount"></span></button>
@@ -357,6 +360,7 @@ async function viewList() {
 
   document.getElementById('add').onclick = () => go('#/edit');
   document.getElementById('to-backup').onclick = () => go('#/backup');
+  document.getElementById('to-settings').onclick = () => go('#/settings');
   const nb = document.getElementById('notice-backup');
   if (nb) nb.onclick = () => go('#/backup');
 
@@ -889,6 +893,52 @@ async function viewEdit(id) {
 }
 
 /* =========================================================
+   Einstellungen: Name des Rezeptbuchs
+   ========================================================= */
+const GEAR_SVG = `<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/></svg>`;
+
+// „Tom“ → „Tom’s Rezepte“, „Hans“ → „Hans’ Rezepte“ (Namen auf s, ß, x, z, ce bekommen nur den Apostroph)
+function bookTitle(name) {
+  const n = String(name || '').trim().replace(/['’‘`´]s?$/, '');
+  if (!n) return 'Rezepte';
+  return /(s|ß|x|z|ce)$/i.test(n) ? `${n}’ Rezepte` : `${n}’s Rezepte`;
+}
+function applyTitle(name) { document.title = bookTitle(name); }
+
+async function viewSettings() {
+  const name = await DB.getMeta('ownerName', '');
+  $app.innerHTML = `
+    <div class="bar">
+      <button class="link" id="cancel">Abbrechen</button>
+      <span class="bar-title">Einstellungen</span>
+      <button class="link strong" id="save">Sichern</button>
+    </div>
+    <label class="field"><span>Dein Name</span>
+      <input type="text" id="name" value="${esc(name)}" placeholder="z. B. Tom" autocomplete="given-name" enterkeyhint="done" maxlength="30">
+      <small>Erscheint als Überschrift auf der Startseite. Leer lassen für „Rezepte“.</small>
+    </label>
+    <div class="title-preview" aria-live="polite"><small>Vorschau</small><span id="preview">${esc(bookTitle(name))}</span></div>
+    <div class="card">
+      <h2>Backup</h2>
+      <p>Rezepte als Datei sichern oder auf einem neuen Gerät wiederherstellen.</p>
+      <button class="btn" id="to-backup">Zu Backup</button>
+    </div>`;
+  const $n = document.getElementById('name'), $p = document.getElementById('preview');
+  $n.oninput = () => { $p.textContent = bookTitle($n.value); };
+  const save = async () => {
+    const v = $n.value.trim().replace(/['’‘`´]s?$/, '');
+    await DB.setMeta('ownerName', v);
+    applyTitle(v);
+    toast('Gesichert.');
+    go('#/');
+  };
+  $n.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } };
+  document.getElementById('save').onclick = save;
+  document.getElementById('cancel').onclick = () => go('#/');
+  document.getElementById('to-backup').onclick = () => go('#/backup');
+}
+
+/* =========================================================
    Backup: Export / Import
    ========================================================= */
 function blobToDataURL(blob) {
@@ -902,7 +952,8 @@ async function buildBackup() {
   const used = new Set(recipes.flatMap((r) => r.photoIds || []));
   const outPhotos = [];
   for (const p of photos) if (used.has(p.id)) outPhotos.push({ id: p.id, type: p.type, data: await blobToDataURL(p.blob) });
-  return { app: 'rezepte', schema: SCHEMA, exportedAt: new Date().toISOString(), recipes, photos: outPhotos };
+  return { app: 'rezepte', schema: SCHEMA, exportedAt: new Date().toISOString(),
+    settings: { ownerName: await DB.getMeta('ownerName', '') }, recipes, photos: outPhotos };
 }
 
 async function exportBackup() {
@@ -935,6 +986,10 @@ async function importBackup(file) {
   try { data = JSON.parse(await file.text()); } catch (_) { throw new Error('Die Datei ist kein gültiges Rezepte-Backup.'); }
   if (data.app !== 'rezepte' || !Array.isArray(data.recipes)) throw new Error('Die Datei ist kein Rezepte-Backup.');
   if (data.schema > SCHEMA) throw new Error('Das Backup stammt von einer neueren App-Version. Bitte zuerst die App aktualisieren.');
+  if (data.settings && data.settings.ownerName && !(await DB.getMeta('ownerName', ''))) {
+    await DB.setMeta('ownerName', data.settings.ownerName);
+    applyTitle(data.settings.ownerName);
+  }
 
   const photos = new Map((data.photos || []).map((p) => [p.id, p]));
   let added = 0, updated = 0, kept = 0;
@@ -1007,7 +1062,8 @@ async function viewBackup() {
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
+DB.getMeta('ownerName', '').then(applyTitle).catch(() => {});
 route();
 
 // Für Tests
-window.__rezepte = { parseIngredientLine, scaleAmount, renderIngredient, parseSteps, recipeText };
+window.__rezepte = { bookTitle, parseIngredientLine, scaleAmount, renderIngredient, parseSteps, recipeText };
