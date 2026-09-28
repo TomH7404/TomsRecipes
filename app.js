@@ -285,6 +285,36 @@ const CUISINES = ['Österreichisch', 'Italienisch', 'Mediterran', 'Französisch'
   'Asiatisch', 'Indisch', 'Mexikanisch', 'Amerikanisch', 'Sonstige'];
 const MAX_PHOTOS = 10;
 
+// Art & Küche: Listen sind in den Einstellungen änderbar; Rezepte speichern Mehrfachauswahl (Arrays)
+const CAT = {
+  meal: { field: 'mealTypes', meta: 'listMealTypes', label: 'Art', defaults: MEAL_TYPES },
+  cuisine: { field: 'cuisines', meta: 'listCuisines', label: 'Küche', defaults: CUISINES },
+};
+async function getList(kind) { return (await DB.getMeta(CAT[kind].meta)) || [...CAT[kind].defaults]; }
+async function setList(kind, list) { await DB.setMeta(CAT[kind].meta, list); }
+const catsOf = (r) => [...(r.mealTypes || []), ...(r.cuisines || [])];
+
+// Ältere Rezepte (eine Art / eine Küche als Text) auf Listen umstellen
+function normCats(r) {
+  let changed = false;
+  if (!Array.isArray(r.mealTypes)) { r.mealTypes = r.mealType ? [r.mealType] : []; changed = true; }
+  if (!Array.isArray(r.cuisines)) { r.cuisines = r.cuisine ? [r.cuisine] : []; changed = true; }
+  if ('mealType' in r || 'cuisine' in r) { delete r.mealType; delete r.cuisine; changed = true; }
+  return changed;
+}
+async function migrate() {
+  for (const r of await DB.all('recipes')) if (normCats(r)) await DB.put('recipes', r);
+}
+// Unbekannte Werte (z. B. aus einem Backup) an die Listen anhängen, damit sie in Filter & Einstellungen auftauchen
+async function adoptUnknownCats(recipes) {
+  for (const kind of Object.keys(CAT)) {
+    const list = await getList(kind), have = new Set(list);
+    let add = false;
+    for (const r of recipes) for (const v of r[CAT[kind].field] || []) if (!have.has(v)) { list.push(v); have.add(v); add = true; }
+    if (add) await setList(kind, list);
+  }
+}
+
 const starsText = (n) => (n ? '★'.repeat(n) + '☆'.repeat(5 - n) : '');
 const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return url; } };
 const tagKey = (t) => norm(t).trim();
@@ -368,7 +398,7 @@ async function viewList() {
   const index = recipes.map((r) => ({
     r,
     tags: new Set((r.tags || []).map(tagKey)),
-    hay: norm([r.title, r.place, r.cuisine, r.mealType, r.notes, ...(r.tags || []),
+    hay: norm([r.title, r.place, ...catsOf(r), r.notes, ...(r.tags || []),
       ...(r.ingredients || []).map((i) => i.name || i.raw), r.sourceSnapshot && r.sourceSnapshot.text].join(' ')),
   }));
 
@@ -398,8 +428,8 @@ async function viewList() {
     const words = norm(listQuery).split(/\s+/).filter(Boolean);
     const hits = index.filter((x) =>
       words.every((w) => x.hay.includes(w)) &&
-      (!filters.meal || x.r.mealType === filters.meal) &&
-      (!filters.cuisine || x.r.cuisine === filters.cuisine) &&
+      (!filters.meal || (x.r.mealTypes || []).includes(filters.meal)) &&
+      (!filters.cuisine || (x.r.cuisines || []).includes(filters.cuisine)) &&
       (!filters.minRating || (x.r.rating || 0) >= filters.minRating) &&
       filters.tags.every((t) => x.tags.has(tagKey(t)))).map((x) => x.r);
     if (recipes.length && !hits.length) {
@@ -408,7 +438,7 @@ async function viewList() {
     }
     $list.innerHTML = hits.map((r) => {
       const n = (r.ingredients || []).filter((i) => i.type === 'item').length;
-      const meta = [r.mealType, r.cuisine, !n && !(r.steps || []).length ? 'noch unvollständig' : null].filter(Boolean).join(', ');
+      const meta = [...catsOf(r), !n && !(r.steps || []).length ? 'noch unvollständig' : null].filter(Boolean).join(', ');
       return `<li><button class="row" data-id="${esc(r.id)}">
         <span class="thumb empty" data-photo="${esc((r.photoIds || [])[0] || '')}">${esc((r.title || '?').trim().charAt(0).toUpperCase())}</span>
         <span><span class="row-title">${esc(r.title)}</span>
@@ -432,8 +462,11 @@ async function viewList() {
 }
 
 async function filterDialog(recipes) {
-  const used = (key, list) => list.filter((v) => recipes.some((r) => r[key] === v));
-  const meals = used('mealType', MEAL_TYPES), cuisines = used('cuisine', CUISINES);
+  const used = async (kind) => {
+    const f = CAT[kind].field, inUse = new Set(recipes.flatMap((r) => r[f] || []));
+    return (await getList(kind)).filter((v) => inUse.has(v));
+  };
+  const meals = await used('meal'), cuisines = await used('cuisine');
   const tags = await allTags();
   const draft = { ...filters, tags: [...filters.tags] };
   return new Promise((resolve) => {
@@ -476,7 +509,7 @@ async function viewDetail(id) {
   let current = r.lastServings || base;
   const photos = (await Promise.all((r.photoIds || []).map(photoUrl))).filter(Boolean);
   const hasItems = (r.ingredients || []).some((i) => i.type === 'item');
-  const cls = [r.mealType, r.cuisine].filter(Boolean).join(', ');
+  const cls = catsOf(r).join(', ');
   const mapUrl = r.placeGeo ? `https://maps.apple.com/?ll=${r.placeGeo.lat},${r.placeGeo.lon}&q=${encodeURIComponent(r.place || 'Ort')}` : null;
 
   $app.innerHTML = `
@@ -662,7 +695,7 @@ async function viewEdit(id) {
   const r = existing || {
     id: uid(), schema: SCHEMA, title: '', servings: 4, lastServings: null,
     ingredients: [], steps: [], photoIds: [],
-    sourceUrl: '', sourceSnapshot: null, place: '', placeGeo: null, rating: null, tags: [], cuisine: '', mealType: '', notes: '',
+    sourceUrl: '', sourceSnapshot: null, place: '', placeGeo: null, rating: null, tags: [], cuisines: [], mealTypes: [], notes: '',
     createdAt: Date.now(), updatedAt: Date.now(), lastCookedAt: null,
   };
 
@@ -672,7 +705,11 @@ async function viewEdit(id) {
   const removedIds = new Set();
   let tags = [...(r.tags || [])];
   let rating = r.rating || 0;
-  let mealType = r.mealType || '', cuisine = r.cuisine || '';
+  normCats(r);
+  let mealTypes = [...r.mealTypes], cuisines = [...r.cuisines];
+  // Werte des Rezepts, die nicht (mehr) in der Liste stehen, trotzdem anzeigen
+  const withOwn = (list, own) => [...list, ...own.filter((v) => !list.includes(v))];
+  const mealOpts = withOwn(await getList('meal'), mealTypes), cuisineOpts = withOwn(await getList('cuisine'), cuisines);
   let placeGeo = r.placeGeo || null;
   const knownTags = await allTags();
 
@@ -716,8 +753,8 @@ async function viewEdit(id) {
       <div class="rate" id="rate" role="radiogroup" aria-label="Bewertung">${[1, 2, 3, 4, 5].map((n) =>
         `<button type="button" role="radio" data-n="${n}" aria-label="${n} von 5">★</button>`).join('')}</div>
     </div>
-    <div class="field"><span>Art</span>${chipGroup('meal', MEAL_TYPES, mealType)}</div>
-    <div class="field"><span>Küche</span>${chipGroup('cuisine', CUISINES, cuisine)}</div>
+    <div class="field"><span>Art</span>${chipGroup('meal', mealOpts, mealTypes, true)}<small>Mehrfachauswahl möglich. Liste in den Einstellungen anpassen.</small></div>
+    <div class="field"><span>Küche</span>${chipGroup('cuisine', cuisineOpts, cuisines, true)}<small>Mehrfachauswahl möglich.</small></div>
     <div class="field"><span>Eigenschaften</span>
       <div class="chips" id="tags"></div>
       <input type="text" id="tag-in" placeholder="Neue Eigenschaft, z. B. scharf" enterkeyhint="done" autocomplete="off">
@@ -796,8 +833,8 @@ async function viewEdit(id) {
   drawRate();
 
   /* --- Art & Küche --- */
-  bindChips(document.getElementById('meal'), false, (v) => { mealType = v[0] || ''; });
-  bindChips(document.getElementById('cuisine'), false, (v) => { cuisine = v[0] || ''; });
+  bindChips(document.getElementById('meal'), true, (v) => { mealTypes = v; });
+  bindChips(document.getElementById('cuisine'), true, (v) => { cuisines = v; });
 
   /* --- Eigenschaften --- */
   const $tags = document.getElementById('tags'), $tagIn = document.getElementById('tag-in'), $sug = document.getElementById('tag-sug');
@@ -858,7 +895,7 @@ async function viewEdit(id) {
     r.place = $place.value.trim();
     r.placeGeo = r.place ? placeGeo : null;
     r.rating = rating || null;
-    r.mealType = mealType; r.cuisine = cuisine;
+    r.mealTypes = mealTypes; r.cuisines = cuisines;
     r.tags = tags;
     r.notes = document.getElementById('notes').value.trim();
     r.updatedAt = Date.now();
@@ -905,37 +942,128 @@ function bookTitle(name) {
 }
 function applyTitle(name) { document.title = bookTitle(name); }
 
+function inputDialog(title, value, okLabel) {
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.innerHTML = `<h3>${esc(title)}</h3>
+      <input type="text" class="dlg-input" value="${esc(value)}" maxlength="40" enterkeyhint="done">
+      <div class="stack" style="margin-top:16px"><button class="btn primary" value="ok">${esc(okLabel)}</button>
+      <button class="btn" value="">Abbrechen</button></div>`;
+    document.body.appendChild(d);
+    const inp = d.querySelector('input');
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); d.close('ok'); } };
+    d.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) d.close(b.value); });
+    d.addEventListener('close', () => { resolve(d.returnValue === 'ok' ? inp.value.trim() : null); d.remove(); });
+    d.showModal();
+    setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  });
+}
+
 async function viewSettings() {
   const name = await DB.getMeta('ownerName', '');
   $app.innerHTML = `
-    <div class="bar">
-      <button class="link" id="cancel">Abbrechen</button>
-      <span class="bar-title">Einstellungen</span>
-      <button class="link strong" id="save">Sichern</button>
-    </div>
+    <div class="bar"><button class="link" id="back">‹ Rezepte</button><span class="bar-title">Einstellungen</span><span style="width:70px"></span></div>
     <label class="field"><span>Dein Name</span>
       <input type="text" id="name" value="${esc(name)}" placeholder="z. B. Tom" autocomplete="given-name" enterkeyhint="done" maxlength="30">
       <small>Erscheint als Überschrift auf der Startseite. Leer lassen für „Rezepte“.</small>
     </label>
     <div class="title-preview" aria-live="polite"><small>Vorschau</small><span id="preview">${esc(bookTitle(name))}</span></div>
+    <section class="card" id="list-meal"></section>
+    <section class="card" id="list-cuisine"></section>
     <div class="card">
       <h2>Backup</h2>
       <p>Rezepte als Datei sichern oder auf einem neuen Gerät wiederherstellen.</p>
       <button class="btn" id="to-backup">Zu Backup</button>
     </div>`;
+
+  // Name wird beim Tippen automatisch gesichert
   const $n = document.getElementById('name'), $p = document.getElementById('preview');
-  $n.oninput = () => { $p.textContent = bookTitle($n.value); };
-  const save = async () => {
-    const v = $n.value.trim().replace(/['’‘`´]s?$/, '');
-    await DB.setMeta('ownerName', v);
-    applyTitle(v);
-    toast('Gesichert.');
-    go('#/');
+  let nameT;
+  $n.oninput = () => {
+    $p.textContent = bookTitle($n.value);
+    clearTimeout(nameT);
+    nameT = setTimeout(async () => { const v = $n.value.trim().replace(/['’‘`´]s?$/, ''); await DB.setMeta('ownerName', v); applyTitle(v); }, 300);
   };
-  $n.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } };
-  document.getElementById('save').onclick = save;
-  document.getElementById('cancel').onclick = () => go('#/');
+  $n.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); $n.blur(); } };
+  document.getElementById('back').onclick = () => go('#/');
   document.getElementById('to-backup').onclick = () => go('#/backup');
+
+  const hints = { meal: 'Zum Beispiel Frühstück, Hauptspeise oder Party.', cuisine: 'Zum Beispiel Italienisch, Asiatisch oder Omas Küche.' };
+
+  async function drawList(kind) {
+    const { field, label } = CAT[kind];
+    const list = await getList(kind);
+    const recipes = await DB.all('recipes');
+    const count = (v) => recipes.filter((r) => (r[field] || []).includes(v)).length;
+    const el = document.getElementById('list-' + kind);
+    el.innerHTML = `<h2>${label}</h2><p>${hints[kind]} Änderungen gelten sofort, auch für bestehende Rezepte.</p>
+      <ul class="cat-list">${list.map((v, i) => `<li>
+          <span class="cat-name">${esc(v)}<small>${count(v) ? plural(count(v), 'Rezept', 'Rezepte') : ''}</small></span>
+          <button class="icon-mini" data-a="up" data-i="${i}" aria-label="${esc(v)} nach oben" ${i ? '' : 'disabled'}>↑</button>
+          <button class="icon-mini" data-a="ren" data-i="${i}" aria-label="${esc(v)} umbenennen">✎</button>
+          <button class="icon-mini danger" data-a="del" data-i="${i}" aria-label="${esc(v)} löschen">✕</button>
+        </li>`).join('')}</ul>
+      <div class="inline-wide add-row"><input type="text" placeholder="Neuer Eintrag" maxlength="40" enterkeyhint="done">
+        <button class="btn slim add-btn" data-a="add" aria-label="Hinzufügen">+</button></div>
+      <button class="link reset-list" data-a="reset">Standardliste wiederherstellen</button>`;
+    const inp = el.querySelector('.add-row input');
+    const add = async () => {
+      const v = inp.value.trim();
+      if (!v) return;
+      if (list.some((x) => norm(x) === norm(v))) { toast(`„${v}“ gibt es schon.`); return; }
+      list.push(v); await setList(kind, list); drawList(kind);
+      setTimeout(() => el.querySelector('.add-row input').focus(), 50);
+    };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+    el.onclick = async (e) => {
+      const b = e.target.closest('button[data-a]');
+      if (!b) return;
+      const i = +b.dataset.i, v = list[i];
+      switch (b.dataset.a) {
+        case 'add': return add();
+        case 'up': [list[i - 1], list[i]] = [list[i], list[i - 1]]; await setList(kind, list); return drawList(kind);
+        case 'ren': {
+          const nv = await inputDialog(`„${v}“ umbenennen`, v, 'Umbenennen');
+          if (!nv || nv === v) return;
+          const dup = list.find((x, j) => j !== i && norm(x) === norm(nv));
+          if (dup && !(await confirmDialog('Zusammenführen?', `„${dup}“ gibt es schon. Rezepte mit „${v}“ bekommen dann „${dup}“.`, 'Zusammenführen'))) return;
+          const target = dup || nv;
+          if (dup) list.splice(i, 1); else list[i] = nv;
+          await setList(kind, list);
+          for (const r of recipes) {
+            const vals = r[field] || [];
+            if (!vals.includes(v)) continue;
+            r[field] = [...new Set(vals.map((x) => (x === v ? target : x)))];
+            await DB.put('recipes', r);
+          }
+          await markDirty();
+          toast('Umbenannt.');
+          return drawList(kind);
+        }
+        case 'del': {
+          const n = count(v);
+          if (n && !(await confirmDialog(`„${v}“ löschen?`, `Wird bei ${plural(n, 'Rezept', 'Rezepten')} entfernt. Die Rezepte selbst bleiben erhalten.`, 'Löschen', true))) return;
+          list.splice(i, 1); await setList(kind, list);
+          for (const r of recipes) {
+            if (!(r[field] || []).includes(v)) continue;
+            r[field] = r[field].filter((x) => x !== v);
+            await DB.put('recipes', r);
+          }
+          if (n) await markDirty();
+          return drawList(kind);
+        }
+        case 'reset': {
+          if (!(await confirmDialog('Standardliste wiederherstellen?', 'Die Liste wird auf die ursprünglichen Einträge zurückgesetzt. Einträge, die in Rezepten verwendet werden, bleiben in der Liste.', 'Wiederherstellen'))) return;
+          const inUse = new Set(recipes.flatMap((r) => r[field] || []));
+          const next = [...CAT[kind].defaults, ...list.filter((x) => inUse.has(x) && !CAT[kind].defaults.includes(x))];
+          await setList(kind, next);
+          return drawList(kind);
+        }
+      }
+    };
+  }
+  await drawList('meal');
+  await drawList('cuisine');
 }
 
 /* =========================================================
@@ -953,7 +1081,8 @@ async function buildBackup() {
   const outPhotos = [];
   for (const p of photos) if (used.has(p.id)) outPhotos.push({ id: p.id, type: p.type, data: await blobToDataURL(p.blob) });
   return { app: 'rezepte', schema: SCHEMA, exportedAt: new Date().toISOString(),
-    settings: { ownerName: await DB.getMeta('ownerName', '') }, recipes, photos: outPhotos };
+    settings: { ownerName: await DB.getMeta('ownerName', ''), mealTypes: await getList('meal'), cuisines: await getList('cuisine') },
+    recipes, photos: outPhotos };
 }
 
 async function exportBackup() {
@@ -990,6 +1119,11 @@ async function importBackup(file) {
     await DB.setMeta('ownerName', data.settings.ownerName);
     applyTitle(data.settings.ownerName);
   }
+  for (const [kind, key] of [['meal', 'mealTypes'], ['cuisine', 'cuisines']]) {
+    const fromBackup = data.settings && data.settings[key];
+    if (Array.isArray(fromBackup) && !(await DB.getMeta(CAT[kind].meta))) await setList(kind, fromBackup);
+  }
+  data.recipes.forEach((r) => r && normCats(r));
 
   const photos = new Map((data.photos || []).map((p) => [p.id, p]));
   let added = 0, updated = 0, kept = 0;
@@ -1005,6 +1139,7 @@ async function importBackup(file) {
     await DB.put('recipes', r);
     local ? updated++ : added++;
   }
+  await adoptUnknownCats(data.recipes.filter(Boolean));
   requestPersistence();
   return { added, updated, kept };
 }
@@ -1063,7 +1198,7 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 DB.getMeta('ownerName', '').then(applyTitle).catch(() => {});
-route();
+migrate().catch(() => {}).then(route);
 
 // Für Tests
 window.__rezepte = { bookTitle, parseIngredientLine, scaleAmount, renderIngredient, parseSteps, recipeText };
