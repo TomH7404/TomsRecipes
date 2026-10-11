@@ -1,6 +1,6 @@
 // Offline-Cache für die App-Hülle. Bei jeder Änderung an den Dateien VERSION erhöhen.
-const VERSION = 'rezepte-v5';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
+const VERSION = 'rezepte-v6';
+const SHELL = ['./', 'index.html', 'style.css', 'i18n.js', 'app.js', 'manifest.webmanifest',
   'apple-touch-icon.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

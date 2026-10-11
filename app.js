@@ -64,6 +64,7 @@ addUnits('Bund', 'count'); addUnits('Scheibe', 'count', 'scheiben'); addUnits('P
 addUnits('Glas', 'count', 'gläser'); addUnits('Blatt', 'count', 'blätter'); addUnits('Zweig', 'count', 'zweige');
 addUnits('Handvoll', 'count'); addUnits('Knolle', 'count', 'knollen'); addUnits('Kopf', 'count', 'köpfe');
 addUnits('Stange', 'count', 'stangen'); addUnits('Würfel', 'count'); addUnits('cm', 'count');
+for (const [canon, aliases] of Object.entries(UNIT_ALIASES)) addUnits(canon, UNITS[canon.toLowerCase()][1], ...aliases);
 
 const FRAC_CHARS = { '½': .5, '¼': .25, '¾': .75, '⅓': 1 / 3, '⅔': 2 / 3, '⅛': .125 };
 const QTY_RE = String.raw`(\d+\s+\d+\/\d+|\d+\/\d+|\d*[½¼¾⅓⅔⅛]|\d+(?:[.,]\d+)?)`;
@@ -106,7 +107,11 @@ function parseIngredients(text) {
 
 const PLURAL = { Prise: 'Prisen', Zehe: 'Zehen', Dose: 'Dosen', Scheibe: 'Scheiben', Tasse: 'Tassen',
   Stange: 'Stangen', Knolle: 'Knollen', Zweig: 'Zweige' };
-const unitLabel = (unit, qty) => (qty > 1 && PLURAL[unit]) || unit;
+function unitLabel(unit, qty) {
+  const tr = UNIT_TR[LANG] && UNIT_TR[LANG][unit];
+  if (tr) return tr[qty > 1 ? 1 : 0];
+  return (LANG === 'de' && qty > 1 && PLURAL[unit]) || unit;
+}
 
 function roundTo(v, step) { return Math.round(v / step) * step; }
 
@@ -154,7 +159,7 @@ function fmtNum(n, cat) {
       if (Math.abs(frac - f) < 0.02) return (whole ? String(whole) : (ch ? '' : '0')) + ch;
     }
   }
-  return (Math.round(n * 100) / 100).toLocaleString('de-AT', { maximumFractionDigits: 2 });
+  return (Math.round(n * 100) / 100).toLocaleString(fmtLocale(), { maximumFractionDigits: 2 });
 }
 
 function renderIngredient(ing, factor) {
@@ -190,7 +195,7 @@ async function compressImage(file, maxEdge = 1600, quality = 0.82) {
     const img = await new Promise((res, rej) => {
       const i = new Image();
       i.onload = () => res(i);
-      i.onerror = () => rej(new Error('Das Bild konnte nicht gelesen werden.'));
+      i.onerror = () => rej(new Error(t('imgErr')));
       i.src = url;
     });
     const scale = Math.min(1, maxEdge / Math.max(img.naturalWidth, img.naturalHeight));
@@ -221,8 +226,7 @@ async function photoUrl(id) {
 const $app = document.getElementById('app');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-const fmtDate = (ts) => new Date(ts).toLocaleDateString('de-AT', { day: 'numeric', month: 'long', year: 'numeric' });
-const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const fmtDate = (ts) => new Date(ts).toLocaleDateString(fmtLocale(), { day: 'numeric', month: 'long', year: 'numeric' });
 
 let toastTimer;
 function toast(msg) {
@@ -237,7 +241,7 @@ function confirmDialog(title, text, okLabel, danger = false) {
     const d = document.createElement('dialog');
     d.innerHTML = `<h3>${esc(title)}</h3><p>${esc(text)}</p>
       <div class="stack"><button class="btn ${danger ? 'danger' : 'primary'}" value="ok">${esc(okLabel)}</button>
-      <button class="btn" value="cancel">Abbrechen</button></div>`;
+      <button class="btn" value="cancel">${esc(t('cancel'))}</button></div>`;
     document.body.appendChild(d);
     d.addEventListener('click', (e) => {
       const b = e.target.closest('button');
@@ -272,8 +276,8 @@ async function route() {
     return await viewList();
   } catch (err) {
     console.error(err);
-    $app.innerHTML = `<div class="empty-state"><h2>Das hat nicht geklappt</h2><p>${esc(err.message)}</p>
-      <button class="btn" onclick="location.hash=''">Zur Übersicht</button></div>`;
+    $app.innerHTML = `<div class="empty-state"><h2>${esc(t('errTitle'))}</h2><p>${esc(err.message)}</p>
+      <button class="btn" onclick="location.hash=''">${esc(t('toOverview'))}</button></div>`;
   }
 }
 
@@ -287,8 +291,8 @@ const MAX_PHOTOS = 10;
 
 // Art & Küche: Listen sind in den Einstellungen änderbar; Rezepte speichern Mehrfachauswahl (Arrays)
 const CAT = {
-  meal: { field: 'mealTypes', meta: 'listMealTypes', label: 'Art', defaults: MEAL_TYPES },
-  cuisine: { field: 'cuisines', meta: 'listCuisines', label: 'Küche', defaults: CUISINES },
+  meal: { field: 'mealTypes', meta: 'listMealTypes', label: 'meal', defaults: MEAL_TYPES },
+  cuisine: { field: 'cuisines', meta: 'listCuisines', label: 'cuisine', defaults: CUISINES },
 };
 async function getList(kind) { return (await DB.getMeta(CAT[kind].meta)) || [...CAT[kind].defaults]; }
 async function setList(kind, list) { await DB.setMeta(CAT[kind].meta, list); }
@@ -330,10 +334,10 @@ function extractUrl(text) {
   return m ? m[0].replace(/[).,;!?]+$/, '') : '';
 }
 
-function chipGroup(id, options, selected, multi = false) {
+function chipGroup(id, options, selected, multi = false, label = (o) => o) {
   const sel = new Set(multi ? selected : [selected]);
   return `<div class="chips" id="${id}" role="group">${options.map((o) =>
-    `<button type="button" class="chip" aria-pressed="${sel.has(o)}" data-v="${esc(o)}">${esc(o)}</button>`).join('')}</div>`;
+    `<button type="button" class="chip" aria-pressed="${sel.has(o)}" data-v="${esc(o)}">${esc(label(o))}</button>`).join('')}</div>`;
 }
 
 // Macht eine Chip-Gruppe klickbar. single: nochmal tippen hebt die Auswahl auf.
@@ -373,32 +377,33 @@ async function viewList() {
   const stale = recipes.length > 0 && dirty && (!lastBackup || Date.now() - lastBackup > 7 * 864e5);
 
   $app.innerHTML = `
-    <div class="bar"><span></span><span class="bar-right"><button class="link" id="to-backup">Backup</button>
-      <button class="icon-btn" id="to-settings" aria-label="Einstellungen">${GEAR_SVG}</button></span></div>
+    <div class="bar">${langSwitch()}<span class="bar-right"><button class="link" id="to-backup">${esc(t('backup'))}</button>
+      <button class="icon-btn" id="to-settings" aria-label="${esc(t('settings'))}">${GEAR_SVG}</button></span></div>
     <h1 class="shelf">${esc(bookTitle(ownerName))}${recipes.length ? `<span class="count">${recipes.length}</span>` : ''}</h1>
     ${recipes.length ? `<div class="searchrow">
-        <input class="search" id="q" type="search" placeholder="Rezept, Zutat, Ort …" value="${esc(listQuery)}" autocomplete="off">
-        <button class="filter-btn" id="open-filter" aria-label="Filter">Filter<span id="fcount"></span></button>
+        <input class="search" id="q" type="search" placeholder="${esc(t('searchPh'))}" value="${esc(listQuery)}" autocomplete="off">
+        <button class="filter-btn" id="open-filter" aria-label="${esc(t('filter'))}">${esc(t('filter'))}<span id="fcount"></span></button>
       </div>
       <div class="chips active-filters" id="active"></div>` : ''}
-    ${stale ? `<div class="notice"><span>${lastBackup ? `Letztes Backup am ${fmtDate(lastBackup)}. Seitdem gibt es Änderungen.` : 'Noch kein Backup vorhanden.'}</span>
-      <button class="link strong" id="notice-backup">Sichern</button></div>` : ''}
+    ${stale ? `<div class="notice"><span>${esc(lastBackup ? t('lastBackupChanged', fmtDate(lastBackup)) : t('noBackupYet'))}</span>
+      <button class="link strong" id="notice-backup">${esc(t('backupNow'))}</button></div>` : ''}
     <ul class="list" id="list"></ul>
-    ${recipes.length ? '' : `<div class="empty-state"><h2>Noch keine Rezepte</h2>
-      <p>Titel genügt fürs Erste – Zutaten, Schritte und Fotos kannst du jederzeit ergänzen.</p></div>`}
-    <button class="fab" id="add">Neues Rezept</button>`;
+    ${recipes.length ? '' : `<div class="empty-state"><h2>${esc(t('emptyTitle'))}</h2>
+      <p>${esc(t('emptyText'))}</p></div>`}
+    <button class="fab" id="add">${esc(t('newRecipe'))}</button>`;
 
   document.getElementById('add').onclick = () => go('#/edit');
   document.getElementById('to-backup').onclick = () => go('#/backup');
   document.getElementById('to-settings').onclick = () => go('#/settings');
   const nb = document.getElementById('notice-backup');
   if (nb) nb.onclick = () => go('#/backup');
+  bindLangSwitch();
 
   const $list = document.getElementById('list');
   const index = recipes.map((r) => ({
     r,
     tags: new Set((r.tags || []).map(tagKey)),
-    hay: norm([r.title, r.place, ...catsOf(r), r.notes, ...(r.tags || []),
+    hay: norm([r.title, r.place, ...catsOf(r), ...catsOf(r).map(catLabel), r.notes, ...(r.tags || []),
       ...(r.ingredients || []).map((i) => i.name || i.raw), r.sourceSnapshot && r.sourceSnapshot.text].join(' ')),
   }));
 
@@ -408,18 +413,18 @@ async function viewList() {
     const n = activeFilterCount();
     document.getElementById('fcount').textContent = n ? ` (${n})` : '';
     const chips = [];
-    if (filters.meal) chips.push(['meal', filters.meal]);
-    if (filters.cuisine) chips.push(['cuisine', filters.cuisine]);
-    for (const t of filters.tags) chips.push(['tag', t]);
-    if (filters.minRating) chips.push(['rating', `ab ${'★'.repeat(filters.minRating)}`]);
-    $a.innerHTML = chips.map(([k, v]) => `<button class="chip" aria-pressed="true" data-k="${k}" data-v="${esc(v)}" aria-label="Filter ${esc(v)} entfernen">${esc(v)} ✕</button>`).join('');
+    if (filters.meal) chips.push(['meal', filters.meal, catLabel(filters.meal)]);
+    if (filters.cuisine) chips.push(['cuisine', filters.cuisine, catLabel(filters.cuisine)]);
+    for (const tg of filters.tags) chips.push(['tag', tg, tg]);
+    if (filters.minRating) chips.push(['rating', '', ratingLabel(filters.minRating)]);
+    $a.innerHTML = chips.map(([k, v, l]) => `<button class="chip" aria-pressed="true" data-k="${k}" data-v="${esc(v)}" aria-label="${esc(t('removeFilter', l))}">${esc(l)} ✕</button>`).join('');
     $a.onclick = (e) => {
       const b = e.target.closest('.chip'); if (!b) return;
       const { k, v } = b.dataset;
       if (k === 'meal') filters.meal = '';
       if (k === 'cuisine') filters.cuisine = '';
       if (k === 'rating') filters.minRating = 0;
-      if (k === 'tag') filters.tags = filters.tags.filter((t) => t !== v);
+      if (k === 'tag') filters.tags = filters.tags.filter((tg) => tg !== v);
       drawActive(); draw();
     };
   }
@@ -431,18 +436,18 @@ async function viewList() {
       (!filters.meal || (x.r.mealTypes || []).includes(filters.meal)) &&
       (!filters.cuisine || (x.r.cuisines || []).includes(filters.cuisine)) &&
       (!filters.minRating || (x.r.rating || 0) >= filters.minRating) &&
-      filters.tags.every((t) => x.tags.has(tagKey(t)))).map((x) => x.r);
+      filters.tags.every((tg) => x.tags.has(tagKey(tg)))).map((x) => x.r);
     if (recipes.length && !hits.length) {
-      $list.innerHTML = `<li class="empty-state">Keine Treffer. Suchbegriff oder Filter lockern.</li>`;
+      $list.innerHTML = `<li class="empty-state">${esc(t('noHits'))}</li>`;
       return;
     }
     $list.innerHTML = hits.map((r) => {
       const n = (r.ingredients || []).filter((i) => i.type === 'item').length;
-      const meta = [...catsOf(r), !n && !(r.steps || []).length ? 'noch unvollständig' : null].filter(Boolean).join(', ');
+      const meta = [...catsOf(r).map(catLabel), !n && !(r.steps || []).length ? t('incomplete') : null].filter(Boolean).join(', ');
       return `<li><button class="row" data-id="${esc(r.id)}">
         <span class="thumb empty" data-photo="${esc((r.photoIds || [])[0] || '')}">${esc((r.title || '?').trim().charAt(0).toUpperCase())}</span>
         <span><span class="row-title">${esc(r.title)}</span>
-          ${r.rating ? `<span class="row-stars" aria-label="${r.rating} von 5 Sternen">${starsText(r.rating)}</span>` : ''}
+          ${r.rating ? `<span class="row-stars" aria-label="${esc(t('starsAria', r.rating))}">${starsText(r.rating)}</span>` : ''}
           ${meta ? `<span class="row-meta">${esc(meta)}</span>` : ''}</span>
       </button></li>`;
     }).join('');
@@ -461,6 +466,8 @@ async function viewList() {
   await draw();
 }
 
+const ratingLabel = (n) => (n >= 5 ? '★★★★★' : t('from', '★'.repeat(n)));
+
 async function filterDialog(recipes) {
   const used = async (kind) => {
     const f = CAT[kind].field, inUse = new Set(recipes.flatMap((r) => r[f] || []));
@@ -472,20 +479,20 @@ async function filterDialog(recipes) {
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
     d.className = 'sheet';
-    d.innerHTML = `<h3>Filter</h3>
-      ${meals.length ? `<h4>Art</h4>${chipGroup('f-meal', meals, draft.meal)}` : ''}
-      ${cuisines.length ? `<h4>Küche</h4>${chipGroup('f-cuisine', cuisines, draft.cuisine)}` : ''}
-      ${tags.length ? `<h4>Eigenschaften</h4>${chipGroup('f-tags', tags, draft.tags, true)}` : ''}
-      <h4>Bewertung</h4>${chipGroup('f-rating', ['ab ★★★', 'ab ★★★★', '★★★★★'], draft.minRating ? ['ab ★★★', 'ab ★★★★', '★★★★★'][draft.minRating - 3] : '')}
-      ${!meals.length && !cuisines.length && !tags.length ? '<p>Sobald Rezepte eine Art, Küche oder Eigenschaften haben, kannst du hier danach filtern.</p>' : ''}
-      <div class="stack" style="margin-top:20px"><button class="btn primary" value="ok">Anzeigen</button>
-      <button class="btn" value="reset">Alle Filter entfernen</button></div>`;
+    d.innerHTML = `<h3>${esc(t('filter'))}</h3>
+      ${meals.length ? `<h4>${esc(t('meal'))}</h4>${chipGroup('f-meal', meals, draft.meal, false, catLabel)}` : ''}
+      ${cuisines.length ? `<h4>${esc(t('cuisine'))}</h4>${chipGroup('f-cuisine', cuisines, draft.cuisine, false, catLabel)}` : ''}
+      ${tags.length ? `<h4>${esc(t('tags'))}</h4>${chipGroup('f-tags', tags, draft.tags, true)}` : ''}
+      <h4>${esc(t('rating'))}</h4>${chipGroup('f-rating', ['3', '4', '5'], draft.minRating ? String(draft.minRating) : '', false, (v) => ratingLabel(+v))}
+      ${!meals.length && !cuisines.length && !tags.length ? `<p>${esc(t('filterHint'))}</p>` : ''}
+      <div class="stack" style="margin-top:20px"><button class="btn primary" value="ok">${esc(t('show'))}</button>
+      <button class="btn" value="reset">${esc(t('resetFilters'))}</button></div>`;
     document.body.appendChild(d);
     const bind = (id, multi, fn) => { const el = d.querySelector('#' + id); if (el) bindChips(el, multi, fn); };
     bind('f-meal', false, (v) => { draft.meal = v[0] || ''; });
     bind('f-cuisine', false, (v) => { draft.cuisine = v[0] || ''; });
     bind('f-tags', true, (v) => { draft.tags = v; });
-    bind('f-rating', false, (v) => { draft.minRating = v[0] ? ['ab ★★★', 'ab ★★★★', '★★★★★'].indexOf(v[0]) + 3 : 0; });
+    bind('f-rating', false, (v) => { draft.minRating = v[0] ? +v[0] : 0; });
     d.addEventListener('click', (e) => {
       const b = e.target.closest('button[value]'); if (b) d.close(b.value);
     });
@@ -504,48 +511,48 @@ async function filterDialog(recipes) {
    ========================================================= */
 async function viewDetail(id) {
   const r = await DB.get('recipes', id);
-  if (!r) { toast('Dieses Rezept gibt es nicht mehr.'); return go('#/'); }
+  if (!r) { toast(t('notFound')); return go('#/'); }
   const base = r.servings || null;
   let current = r.lastServings || base;
   const photos = (await Promise.all((r.photoIds || []).map(photoUrl))).filter(Boolean);
   const hasItems = (r.ingredients || []).some((i) => i.type === 'item');
-  const cls = catsOf(r).join(', ');
-  const mapUrl = r.placeGeo ? `https://maps.apple.com/?ll=${r.placeGeo.lat},${r.placeGeo.lon}&q=${encodeURIComponent(r.place || 'Ort')}` : null;
+  const cls = catsOf(r).map(catLabel).join(', ');
+  const mapUrl = r.placeGeo ? `https://maps.apple.com/?ll=${r.placeGeo.lat},${r.placeGeo.lon}&q=${encodeURIComponent(r.place || t('placePerson'))}` : null;
 
   $app.innerHTML = `
-    <div class="bar"><button class="link" id="back">‹ Rezepte</button><button class="link" id="edit">Bearbeiten</button></div>
+    <div class="bar"><button class="link" id="back">‹ ${esc(t('recipes'))}</button><button class="link" id="edit">${esc(t('edit'))}</button></div>
     ${photos.length ? `<div class="gallery">
         <div class="track" id="track">${photos.map((u) => `<img src="${u}" alt="">`).join('')}</div>
         ${photos.length > 1 ? `<span class="gcount" id="gcount">1 / ${photos.length}</span>` : ''}
       </div>` : ''}
     <h1 class="dish">${esc(r.title)}</h1>
-    ${r.rating || cls ? `<p class="dish-meta">${r.rating ? `<span class="stars" aria-label="${r.rating} von 5 Sternen">${starsText(r.rating)}</span>` : ''}${cls ? `<span>${esc(cls)}</span>` : ''}</p>` : ''}
+    ${r.rating || cls ? `<p class="dish-meta">${r.rating ? `<span class="stars" aria-label="${esc(t('starsAria', r.rating))}">${starsText(r.rating)}</span>` : ''}${cls ? `<span>${esc(cls)}</span>` : ''}</p>` : ''}
     ${(r.tags || []).length ? `<div class="chips tags-read">${r.tags.map((t) => `<span class="chip static">${esc(t)}</span>`).join('')}</div>` : ''}
     ${base && hasItems ? `
       <div class="servings">
-        <span class="servings-label" id="sv-label">Portionen</span>
+        <span class="servings-label" id="sv-label">${esc(t('servings'))}</span>
         <div class="stepper" role="group" aria-labelledby="sv-label">
-          <button id="minus" aria-label="Eine Portion weniger">−</button>
+          <button id="minus" aria-label="${esc(t('lessServing'))}">−</button>
           <output id="sv" aria-live="polite">${current}</output>
-          <button id="plus" aria-label="Eine Portion mehr">+</button>
+          <button id="plus" aria-label="${esc(t('moreServing'))}">+</button>
         </div>
       </div>
-      <button class="link reset" id="reset" hidden>Zurück auf ${base} (Originalrezept)</button>` : ''}
-    ${(r.ingredients || []).length ? `<h2 class="part">Zutaten</h2><ul class="ingredients" id="ings"></ul>` : ''}
-    ${(r.steps || []).length ? `<h2 class="part">Zubereitung</h2><ol class="steps">${r.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
-    ${!hasItems && !(r.steps || []).length ? `<div class="empty-state"><p>Noch keine Zutaten oder Schritte erfasst.${r.sourceSnapshot?.text ? ' Unten findest du den gesicherten Text der Quelle.' : ''}</p>
-      <button class="btn primary" id="complete">Jetzt ergänzen</button></div>` : ''}
-    ${r.notes ? `<h2 class="part">Notizen</h2><p class="notes">${esc(r.notes)}</p>` : ''}
-    ${r.place || r.sourceUrl || r.sourceSnapshot?.text ? `<h2 class="part">Herkunft</h2><dl class="facts">
-      ${r.place ? `<dt>Ort / Person</dt><dd>${mapUrl ? `<a href="${mapUrl}" target="_blank" rel="noopener">${esc(r.place)}</a>` : esc(r.place)}</dd>` : ''}
-      ${r.sourceUrl ? `<dt>Quelle</dt><dd><a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">${esc(hostOf(r.sourceUrl))}</a></dd>` : ''}
+      <button class="link reset" id="reset" hidden>${esc(t('resetTo', base))}</button>` : ''}
+    ${(r.ingredients || []).length ? `<h2 class="part">${esc(t('ingredients'))}</h2><ul class="ingredients" id="ings"></ul>` : ''}
+    ${(r.steps || []).length ? `<h2 class="part">${esc(t('method'))}</h2><ol class="steps">${r.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
+    ${!hasItems && !(r.steps || []).length ? `<div class="empty-state"><p>${esc(t('noContent'))}${r.sourceSnapshot?.text ? esc(t('snapshotBelow')) : ''}</p>
+      <button class="btn primary" id="complete">${esc(t('completeNow'))}</button></div>` : ''}
+    ${r.notes ? `<h2 class="part">${esc(t('notes'))}</h2><p class="notes">${esc(r.notes)}</p>` : ''}
+    ${r.place || r.sourceUrl || r.sourceSnapshot?.text ? `<h2 class="part">${esc(t('origin'))}</h2><dl class="facts">
+      ${r.place ? `<dt>${esc(t('placePerson'))}</dt><dd>${mapUrl ? `<a href="${mapUrl}" target="_blank" rel="noopener">${esc(r.place)}</a>` : esc(r.place)}</dd>` : ''}
+      ${r.sourceUrl ? `<dt>${esc(t('source'))}</dt><dd><a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">${esc(hostOf(r.sourceUrl))}</a></dd>` : ''}
       </dl>
-      ${r.sourceSnapshot?.text ? `<details class="snapshot"><summary>Gesicherter Text der Quelle${r.sourceSnapshot.savedAt ? ` vom ${fmtDate(r.sourceSnapshot.savedAt)}` : ''}</summary>
+      ${r.sourceSnapshot?.text ? `<details class="snapshot"><summary>${esc(t('savedSource'))}${r.sourceSnapshot.savedAt ? esc(t('savedOn', fmtDate(r.sourceSnapshot.savedAt))) : ''}</summary>
         <p>${esc(r.sourceSnapshot.text)}</p></details>` : ''}` : ''}
-    <div class="cooked"><span id="cooked-text">${r.lastCookedAt ? `Zuletzt gekocht am ${fmtDate(r.lastCookedAt)}` : 'Noch nie als gekocht markiert'}</span>
-      <button class="link strong" id="cooked">Heute gekocht</button></div>
-    <div class="actions"><button class="btn primary" id="share">Teilen</button></div>
-    <p class="meta-foot">Erstellt am ${fmtDate(r.createdAt)}${r.updatedAt - r.createdAt > 6e4 ? `, zuletzt geändert am ${fmtDate(r.updatedAt)}` : ''}</p>`;
+    <div class="cooked"><span id="cooked-text">${esc(r.lastCookedAt ? t('lastCooked', fmtDate(r.lastCookedAt)) : t('neverCooked'))}</span>
+      <button class="link strong" id="cooked">${esc(t('cookedToday'))}</button></div>
+    <div class="actions"><button class="btn primary" id="share">${esc(t('share'))}</button></div>
+    <p class="meta-foot">${esc(t('created', fmtDate(r.createdAt)))}${r.updatedAt - r.createdAt > 6e4 ? esc(t('changedOn', fmtDate(r.updatedAt))) : ''}</p>`;
 
   document.getElementById('back').onclick = () => go('#/');
   document.getElementById('edit').onclick = () => go('#/edit/' + id);
@@ -561,8 +568,8 @@ async function viewDetail(id) {
   document.getElementById('cooked').onclick = async () => {
     r.lastCookedAt = Date.now();
     await DB.put('recipes', r); await markDirty();
-    document.getElementById('cooked-text').textContent = `Zuletzt gekocht am ${fmtDate(r.lastCookedAt)}`;
-    toast('Als heute gekocht markiert.');
+    document.getElementById('cooked-text').textContent = t('lastCooked', fmtDate(r.lastCookedAt));
+    toast(t('markedCooked'));
   };
 
   const $ings = document.getElementById('ings');
@@ -608,21 +615,21 @@ function recipeText(r, servings) {
   const base = r.servings || null;
   const factor = base && servings ? servings / base : 1;
   const out = [r.title];
-  if (servings) out.push(`Für ${plural(servings, 'Portion', 'Portionen')}`);
+  if (servings) out.push(t('forServings', servings));
   const ings = r.ingredients || [];
   if (ings.length) {
-    out.push('', 'Zutaten');
+    out.push('', t('ingredients'));
     for (const ing of ings) {
       const x = renderIngredient(ing, factor);
       out.push(x.section ? `\n${x.text}:` : `• ${x.q ? x.q + ' ' : ''}${x.text}`);
     }
   }
   if ((r.steps || []).length) {
-    out.push('', 'Zubereitung');
+    out.push('', t('method'));
     r.steps.forEach((s, i) => out.push(`${i + 1}. ${s}`));
   }
-  if (r.notes) out.push('', 'Notizen', r.notes);
-  if (r.sourceUrl) out.push('', `Quelle: ${r.sourceUrl}`);
+  if (r.notes) out.push('', t('notes'), r.notes);
+  if (r.sourceUrl) out.push('', t('sourceLine', r.sourceUrl));
   return out.join('\n');
 }
 
@@ -632,23 +639,23 @@ async function shareRecipe(r, servings) {
   let file = null;
   if (photoId) {
     const p = await DB.get('photos', photoId);
-    if (p) file = new File([p.blob], `${r.title.replace(/[^\wäöüÄÖÜß -]/g, '').trim() || 'rezept'}.jpg`, { type: 'image/jpeg' });
+    if (p) file = new File([p.blob], `${r.title.replace(/[^\wäöüÄÖÜß -]/g, '').trim() || t('recipeFile')}.jpg`, { type: 'image/jpeg' });
   }
   const canFile = file && navigator.canShare && navigator.canShare({ files: [file] });
 
   if (!navigator.share) {
-    try { await navigator.clipboard.writeText(text); toast('Rezepttext kopiert.'); } catch (_) { toast('Teilen wird von diesem Browser nicht unterstützt.'); }
+    try { await navigator.clipboard.writeText(text); toast(t('textCopied')); } catch (_) { toast(t('shareUnsupported')); }
     return;
   }
   let mode = 'text';
   if (canFile) {
     mode = await new Promise((resolve) => {
       const d = document.createElement('dialog');
-      d.innerHTML = `<h3>Rezept teilen</h3>
-        <p>Mit Foto klappt es in Nachrichten und Mail. WhatsApp verschickt dann manchmal nur das Bild – dort lieber „Nur Text“.</p>
-        <div class="stack"><button class="btn primary" value="photo">Mit Titelbild teilen</button>
-        <button class="btn" value="text">Nur Text teilen</button>
-        <button class="btn" value="">Abbrechen</button></div>`;
+      d.innerHTML = `<h3>${esc(t('shareTitle'))}</h3>
+        <p>${esc(t('shareHint'))}</p>
+        <div class="stack"><button class="btn primary" value="photo">${esc(t('sharePhoto'))}</button>
+        <button class="btn" value="text">${esc(t('shareText'))}</button>
+        <button class="btn" value="">${esc(t('cancel'))}</button></div>`;
       document.body.appendChild(d);
       d.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) d.close(b.value); });
       d.addEventListener('close', () => { resolve(d.returnValue); d.remove(); });
@@ -660,7 +667,7 @@ async function shareRecipe(r, servings) {
     if (mode === 'photo') await navigator.share({ title: r.title, text, files: [file] });
     else await navigator.share({ title: r.title, text });
   } catch (err) {
-    if (err.name !== 'AbortError') toast('Teilen hat nicht geklappt: ' + err.message);
+    if (err.name !== 'AbortError') toast(t('shareFailed', err.message));
   }
 }
 
@@ -669,16 +676,16 @@ async function shareRecipe(r, servings) {
    ========================================================= */
 function currentPosition() {
   return new Promise((res, rej) => {
-    if (!navigator.geolocation) return rej(new Error('Standort wird nicht unterstützt.'));
+    if (!navigator.geolocation) return rej(new Error(t('geoUnsupported')));
     navigator.geolocation.getCurrentPosition(
       (p) => res({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6) }),
-      (e) => rej(new Error(e.code === 1 ? 'Standortzugriff wurde nicht erlaubt. In den iOS-Einstellungen unter Datenschutz → Ortungsdienste → Safari-Websites freigeben.' : 'Standort konnte nicht bestimmt werden.')),
+      (e) => rej(new Error(e.code === 1 ? t('geoDenied') : t('geoFailed'))),
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
   });
 }
 
 async function placeName({ lat, lon }) {
-  const u = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1&accept-language=de`;
+  const u = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1&accept-language=${LANG}`;
   const j = await (await fetch(u)).json();
   const a = j.address || {};
   const town = a.city || a.town || a.village || a.municipality || a.county || '';
@@ -715,63 +722,63 @@ async function viewEdit(id) {
 
   $app.innerHTML = `
     <div class="bar">
-      <button class="link" id="cancel">Abbrechen</button>
-      <span class="bar-title">${existing ? 'Rezept bearbeiten' : 'Neues Rezept'}</span>
-      <button class="link strong" id="save">Sichern</button>
+      <button class="link" id="cancel">${esc(t('cancel'))}</button>
+      <span class="bar-title">${esc(existing ? t('editRecipe') : t('newRecipe'))}</span>
+      <button class="link strong" id="save">${esc(t('save'))}</button>
     </div>
-    <label class="field"><span>Titel</span>
-      <input type="text" class="title-input" id="title" value="${esc(r.title)}" placeholder="z. B. Kaspressknödel" enterkeyhint="done">
-      <div class="error" id="title-err" hidden>Ein Titel reicht zum Sichern – aber ohne geht es nicht.</div>
+    <label class="field"><span>${esc(t('title'))}</span>
+      <input type="text" class="title-input" id="title" value="${esc(r.title)}" placeholder="${esc(t('titlePh'))}" enterkeyhint="done">
+      <div class="error" id="title-err" hidden>${esc(t('titleErr'))}</div>
     </label>
 
-    <div class="field"><span>Quelle</span>
+    <div class="field"><span>${esc(t('source'))}</span>
       <div class="inline-wide">
-        <input type="url" id="url" value="${esc(r.sourceUrl)}" placeholder="Link zu Rezeptseite oder Post" autocomplete="off" autocapitalize="off">
-        <button type="button" class="btn slim" id="paste">Einfügen</button>
+        <input type="url" id="url" value="${esc(r.sourceUrl)}" placeholder="${esc(t('urlPh'))}" autocomplete="off" autocapitalize="off">
+        <button type="button" class="btn slim" id="paste">${esc(t('paste'))}</button>
       </div>
-      <textarea id="snap" class="snap" placeholder="Rezepttext von der Seite hier einfügen – bleibt erhalten, auch wenn der Link verschwindet.">${esc(r.sourceSnapshot?.text || '')}</textarea>
-      <small>„Einfügen“ übernimmt Link und Text aus der Zwischenablage. Tipp: Bei Instagram & Co. Beschreibung kopieren und hier einfügen.</small>
+      <textarea id="snap" class="snap" placeholder="${esc(t('snapPh'))}">${esc(r.sourceSnapshot?.text || '')}</textarea>
+      <small>${esc(t('pasteHint'))}</small>
     </div>
 
-    <div class="field"><span>Fotos</span>
+    <div class="field"><span>${esc(t('photos'))}</span>
       <div class="photo-grid" id="pgrid"></div>
-      <small id="photo-info">Das erste Foto ist das Titelbild.</small>
+      <small id="photo-info">${esc(t('coverHint'))}</small>
     </div>
 
-    <label class="field"><span>Portionen im Originalrezept</span>
+    <label class="field"><span>${esc(t('servingsOrig'))}</span>
       <div class="inline"><input type="number" id="servings" inputmode="numeric" min="1" max="99" value="${r.servings ?? ''}"></div>
     </label>
-    <label class="field"><span>Zutaten</span>
-      <textarea id="ings" placeholder="200 g Mehl&#10;2 Eier&#10;1 Prise Salz&#10;&#10;Für die Sauce:&#10;1 Dose Tomaten">${esc(ingredientsToText(r.ingredients))}</textarea>
-      <small>Eine Zutat pro Zeile, Menge zuerst. Eine Zeile mit Doppelpunkt am Ende wird zur Zwischenüberschrift.</small>
+    <label class="field"><span>${esc(t('ingredients'))}</span>
+      <textarea id="ings" placeholder="${esc(t('ingsPh')).replace(/\n/g, '&#10;')}">${esc(ingredientsToText(r.ingredients))}</textarea>
+      <small>${esc(t('ingsHint'))}</small>
     </label>
-    <label class="field"><span>Zubereitung</span>
-      <textarea id="steps" placeholder="Einen Schritt pro Zeile – oder Absätze durch eine Leerzeile trennen.">${esc((r.steps || []).join('\n\n'))}</textarea>
+    <label class="field"><span>${esc(t('method'))}</span>
+      <textarea id="steps" placeholder="${esc(t('stepsPh'))}">${esc((r.steps || []).join('\n\n'))}</textarea>
     </label>
 
-    <div class="field"><span>Bewertung</span>
-      <div class="rate" id="rate" role="radiogroup" aria-label="Bewertung">${[1, 2, 3, 4, 5].map((n) =>
-        `<button type="button" role="radio" data-n="${n}" aria-label="${n} von 5">★</button>`).join('')}</div>
+    <div class="field"><span>${esc(t('rating'))}</span>
+      <div class="rate" id="rate" role="radiogroup" aria-label="${esc(t('rating'))}">${[1, 2, 3, 4, 5].map((n) =>
+        `<button type="button" role="radio" data-n="${n}" aria-label="${esc(t('nOf5', n))}">★</button>`).join('')}</div>
     </div>
-    <div class="field"><span>Art</span>${chipGroup('meal', mealOpts, mealTypes, true)}<small>Mehrfachauswahl möglich. Liste in den Einstellungen anpassen.</small></div>
-    <div class="field"><span>Küche</span>${chipGroup('cuisine', cuisineOpts, cuisines, true)}<small>Mehrfachauswahl möglich.</small></div>
-    <div class="field"><span>Eigenschaften</span>
+    <div class="field"><span>${esc(t('meal'))}</span>${chipGroup('meal', mealOpts, mealTypes, true, catLabel)}<small>${esc(t('multiHintList'))}</small></div>
+    <div class="field"><span>${esc(t('cuisine'))}</span>${chipGroup('cuisine', cuisineOpts, cuisines, true, catLabel)}<small>${esc(t('multiHint'))}</small></div>
+    <div class="field"><span>${esc(t('tags'))}</span>
       <div class="chips" id="tags"></div>
-      <input type="text" id="tag-in" placeholder="Neue Eigenschaft, z. B. scharf" enterkeyhint="done" autocomplete="off">
+      <input type="text" id="tag-in" placeholder="${esc(t('tagPh'))}" enterkeyhint="done" autocomplete="off">
       <div class="chips suggest" id="tag-sug"></div>
     </div>
 
-    <div class="field"><span>Ort, Lokal oder Person</span>
+    <div class="field"><span>${esc(t('placeLabel'))}</span>
       <div class="inline-wide">
-        <input type="text" id="place" value="${esc(r.place)}" placeholder="z. B. Gasthaus Bauer, Linz – oder: Mama">
-        <button type="button" class="btn slim" id="locate">Hier</button>
+        <input type="text" id="place" value="${esc(r.place)}" placeholder="${esc(t('placePh'))}">
+        <button type="button" class="btn slim" id="locate">${esc(t('here'))}</button>
       </div>
-      <small id="place-info">${placeGeo ? 'Mit Kartenposition gespeichert.' : '„Hier“ schlägt das Lokal an deinem aktuellen Standort vor.'}</small>
+      <small id="place-info">${esc(placeGeo ? t('placeSaved') : t('placeHint'))}</small>
     </div>
-    <label class="field"><span>Notizen</span>
-      <textarea id="notes" class="short" placeholder="Variationen, was beim nächsten Mal anders">${esc(r.notes || '')}</textarea>
+    <label class="field"><span>${esc(t('notes'))}</span>
+      <textarea id="notes" class="short" placeholder="${esc(t('notesPh'))}">${esc(r.notes || '')}</textarea>
     </label>
-    ${existing ? `<div class="actions"><button class="btn danger" id="delete">Rezept löschen</button></div>` : ''}`;
+    ${existing ? `<div class="actions"><button class="btn danger" id="delete">${esc(t('deleteRecipe'))}</button></div>` : ''}`;
 
   const $title = document.getElementById('title');
   if (!existing) setTimeout(() => $title.focus(), 50);
@@ -781,19 +788,19 @@ async function viewEdit(id) {
   function drawPhotos() {
     $grid.innerHTML = photos.map((p, i) => `<div class="pcell">
         <img src="${p.url}" alt="">
-        ${i === 0 ? '<span class="cover">Titelbild</span>' : `<button type="button" class="pbtn make-cover" data-i="${i}" >Als Titelbild</button>`}
-        <button type="button" class="pbtn del" data-i="${i}" aria-label="Foto entfernen">✕</button>
+        ${i === 0 ? `<span class="cover">${esc(t('cover'))}</span>` : `<button type="button" class="pbtn make-cover" data-i="${i}" >${esc(t('makeCover'))}</button>`}
+        <button type="button" class="pbtn del" data-i="${i}" aria-label="${esc(t('removePhoto'))}">✕</button>
       </div>`).join('') +
-      (photos.length < MAX_PHOTOS ? `<label class="pcell add">+<span>Foto</span><input type="file" accept="image/*" multiple id="photo-in" aria-label="Fotos hinzufügen"></label>` : '');
+      (photos.length < MAX_PHOTOS ? `<label class="pcell add">+<span>${esc(t('photo'))}</span><input type="file" accept="image/*" multiple id="photo-in" aria-label="${esc(t('addPhotos'))}"></label>` : '');
     const inp = document.getElementById('photo-in');
     if (inp) inp.onchange = async (e) => {
       const files = [...e.target.files].slice(0, MAX_PHOTOS - photos.length);
-      $pinfo.textContent = 'Fotos werden verkleinert …';
+      $pinfo.textContent = t('compressing');
       for (const f of files) {
         try { const blob = await compressImage(f); photos.push({ blob, url: URL.createObjectURL(blob) }); }
         catch (err) { toast(err.message); }
       }
-      $pinfo.textContent = 'Das erste Foto ist das Titelbild.';
+      $pinfo.textContent = t('coverHint');
       drawPhotos();
     };
   }
@@ -810,8 +817,8 @@ async function viewEdit(id) {
   const $url = document.getElementById('url'), $snap = document.getElementById('snap');
   document.getElementById('paste').onclick = async () => {
     let text = '';
-    try { text = await navigator.clipboard.readText(); } catch (_) { return toast('Kein Zugriff auf die Zwischenablage. Lange ins Feld tippen und „Einsetzen“ wählen.'); }
-    if (!text.trim()) return toast('Die Zwischenablage ist leer.');
+    try { text = await navigator.clipboard.readText(); } catch (_) { return toast(t('clipNoAccess')); }
+    if (!text.trim()) return toast(t('clipEmpty'));
     const url = extractUrl(text);
     const rest = url ? text.replace(url, '').trim() : text.trim();
     if (url) $url.value = url;
@@ -821,7 +828,7 @@ async function viewEdit(id) {
       const first = rest.split('\n')[0].trim();
       if (first.length > 2 && first.length <= 70) $title.value = first;
     }
-    toast(url ? 'Link übernommen.' : 'Text übernommen.');
+    toast(url ? t('linkTaken') : t('textTaken'));
   };
 
   /* --- Bewertung --- */
@@ -839,12 +846,12 @@ async function viewEdit(id) {
   /* --- Eigenschaften --- */
   const $tags = document.getElementById('tags'), $tagIn = document.getElementById('tag-in'), $sug = document.getElementById('tag-sug');
   function drawTags() {
-    $tags.innerHTML = tags.map((t, i) => `<button type="button" class="chip" aria-pressed="true" data-i="${i}" aria-label="${esc(t)} entfernen">${esc(t)} ✕</button>`).join('');
+    $tags.innerHTML = tags.map((tg, i) => `<button type="button" class="chip" aria-pressed="true" data-i="${i}" aria-label="${esc(t('removeX', tg))}">${esc(tg)} ✕</button>`).join('');
     const have = new Set(tags.map(tagKey)), q = tagKey($tagIn.value);
-    const sug = knownTags.filter((t) => !have.has(tagKey(t)) && (!q || tagKey(t).includes(q))).slice(0, 12);
-    $sug.innerHTML = sug.map((t) => `<button type="button" class="chip" data-v="${esc(t)}">+ ${esc(t)}</button>`).join('');
+    const sug = knownTags.filter((tg) => !have.has(tagKey(tg)) && (!q || tagKey(tg).includes(q))).slice(0, 12);
+    $sug.innerHTML = sug.map((tg) => `<button type="button" class="chip" data-v="${esc(tg)}">+ ${esc(tg)}</button>`).join('');
   }
-  const addTag = (t) => { t = t.replace(/,/g, ' ').trim(); if (t) { tags = uniqTags([...tags, t]); } $tagIn.value = ''; drawTags(); };
+  const addTag = (tg) => { tg = tg.replace(/,/g, ' ').trim(); if (tg) { tags = uniqTags([...tags, tg]); } $tagIn.value = ''; drawTags(); };
   $tags.onclick = (e) => { const b = e.target.closest('.chip'); if (b) { tags.splice(+b.dataset.i, 1); drawTags(); } };
   $sug.onclick = (e) => { const b = e.target.closest('.chip'); if (b) addTag(b.dataset.v); };
   $tagIn.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag($tagIn.value); } };
@@ -856,21 +863,21 @@ async function viewEdit(id) {
   const $place = document.getElementById('place'), $pInfo = document.getElementById('place-info');
   document.getElementById('locate').onclick = async (e) => {
     const btn = e.currentTarget; btn.disabled = true;
-    $pInfo.textContent = 'Standort wird bestimmt …';
+    $pInfo.textContent = t('locating');
     try {
       placeGeo = await currentPosition();
       try {
         const name = await placeName(placeGeo);
         if (name) $place.value = name;
-        $pInfo.textContent = name ? 'Vorschlag übernommen – bei Bedarf anpassen.' : 'Position gespeichert, kein Name gefunden. Bitte Namen eintragen.';
+        $pInfo.textContent = name ? t('placeSuggested') : t('posNoName');
       } catch (_) {
-        $pInfo.textContent = 'Position gespeichert. Ohne Internet kein Namensvorschlag – bitte Namen eintragen.';
+        $pInfo.textContent = t('posOffline');
       }
     } catch (err) {
       $pInfo.textContent = err.message;
     } finally { btn.disabled = false; }
   };
-  $place.oninput = () => { if (!$place.value.trim()) { placeGeo = null; $pInfo.textContent = '„Hier“ schlägt das Lokal an deinem aktuellen Standort vor.'; } };
+  $place.oninput = () => { if (!$place.value.trim()) { placeGeo = null; $pInfo.textContent = t('placeHint'); } };
 
   document.getElementById('cancel').onclick = () => go(existing ? '#/r/' + r.id : '#/');
 
@@ -913,18 +920,18 @@ async function viewEdit(id) {
     await DB.put('recipes', r);
     await markDirty();
     requestPersistence();
-    toast('Gesichert.');
+    toast(t('saved'));
     history.replaceState(null, '', '#/r/' + r.id);
     route();
   };
 
   const del = document.getElementById('delete');
   if (del) del.onclick = async () => {
-    if (!(await confirmDialog('Rezept löschen?', `„${r.title}“ wird mit allen Fotos gelöscht. Das lässt sich nur über ein Backup wiederherstellen.`, 'Löschen', true))) return;
+    if (!(await confirmDialog(t('deleteQ'), t('deleteText', r.title), t('del'), true))) return;
     for (const pid of r.photoIds || []) await DB.del('photos', pid);
     await DB.del('recipes', r.id);
     await markDirty();
-    toast('Gelöscht.');
+    toast(t('deleted'));
     go('#/');
   };
 }
@@ -935,12 +942,38 @@ async function viewEdit(id) {
 const GEAR_SVG = `<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/></svg>`;
 
 // „Tom“ → „Tom’s Rezepte“, „Hans“ → „Hans’ Rezepte“ (Namen auf s, ß, x, z, ce bekommen nur den Apostroph)
-function bookTitle(name) {
+// Englisch: „Tom’s Recipes“ / „James’ Recipes“, Italienisch: „Le ricette di Tom“
+function bookTitle(name, lang = LANG) {
   const n = String(name || '').trim().replace(/['’‘`´]s?$/, '');
-  if (!n) return 'Rezepte';
+  if (!n) return STR[lang].recipes;
+  if (lang === 'it') return `Le ricette di ${n}`;
+  if (lang === 'en') return /s$/i.test(n) ? `${n}’ Recipes` : `${n}’s Recipes`;
   return /(s|ß|x|z|ce)$/i.test(n) ? `${n}’ Rezepte` : `${n}’s Rezepte`;
 }
-function applyTitle(name) { document.title = bookTitle(name); }
+let ownerNameCache = '';
+function applyTitle(name) { ownerNameCache = name || ''; document.title = bookTitle(ownerNameCache); }
+
+/* =========================================================
+   Sprache umschalten
+   ========================================================= */
+async function setLang(lang) {
+  if (!(lang in LANGS)) return;
+  LANG = lang;
+  document.documentElement.lang = lang;
+  applyTitle(ownerNameCache);
+  await DB.setMeta('lang', lang);
+}
+
+// Kompakter Umschalter für die Kopfzeile: DE · EN · IT
+function langSwitch() {
+  return `<div class="lang-switch" role="group" aria-label="${esc(t('language'))}">${Object.keys(LANGS).map((l) =>
+    `<button type="button" data-lang="${l}" lang="${l}" aria-label="${esc(LANGS[l])}" aria-pressed="${l === LANG}">${l.toUpperCase()}</button>`).join('')}</div>`;
+}
+function bindLangSwitch(root = document) {
+  for (const el of root.querySelectorAll('[data-lang]')) {
+    el.onclick = async () => { if (el.dataset.lang !== LANG) { await setLang(el.dataset.lang); route(); } };
+  }
+}
 
 function inputDialog(title, value, okLabel) {
   return new Promise((resolve) => {
@@ -948,7 +981,7 @@ function inputDialog(title, value, okLabel) {
     d.innerHTML = `<h3>${esc(title)}</h3>
       <input type="text" class="dlg-input" value="${esc(value)}" maxlength="40" enterkeyhint="done">
       <div class="stack" style="margin-top:16px"><button class="btn primary" value="ok">${esc(okLabel)}</button>
-      <button class="btn" value="">Abbrechen</button></div>`;
+      <button class="btn" value="">${esc(t('cancel'))}</button></div>`;
     document.body.appendChild(d);
     const inp = d.querySelector('input');
     inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); d.close('ok'); } };
@@ -962,19 +995,24 @@ function inputDialog(title, value, okLabel) {
 async function viewSettings() {
   const name = await DB.getMeta('ownerName', '');
   $app.innerHTML = `
-    <div class="bar"><button class="link" id="back">‹ Rezepte</button><span class="bar-title">Einstellungen</span><span style="width:70px"></span></div>
-    <label class="field"><span>Dein Name</span>
-      <input type="text" id="name" value="${esc(name)}" placeholder="z. B. Tom" autocomplete="given-name" enterkeyhint="done" maxlength="30">
-      <small>Erscheint als Überschrift auf der Startseite. Leer lassen für „Rezepte“.</small>
+    <div class="bar"><button class="link" id="back">‹ ${esc(t('recipes'))}</button><span class="bar-title">${esc(t('settings'))}</span><span style="width:70px"></span></div>
+    <div class="field"><span>${esc(t('language'))}</span>
+      <div class="chips" role="group" aria-label="${esc(t('language'))}">${Object.entries(LANGS).map(([l, label]) =>
+        `<button type="button" class="chip" data-lang="${l}" lang="${l}" aria-pressed="${l === LANG}">${esc(label)}</button>`).join('')}</div>
+    </div>
+    <label class="field"><span>${esc(t('yourName'))}</span>
+      <input type="text" id="name" value="${esc(name)}" placeholder="${esc(t('namePh'))}" autocomplete="given-name" enterkeyhint="done" maxlength="30">
+      <small>${esc(t('nameHint'))}</small>
     </label>
-    <div class="title-preview" aria-live="polite"><small>Vorschau</small><span id="preview">${esc(bookTitle(name))}</span></div>
+    <div class="title-preview" aria-live="polite"><small>${esc(t('preview'))}</small><span id="preview">${esc(bookTitle(name))}</span></div>
     <section class="card" id="list-meal"></section>
     <section class="card" id="list-cuisine"></section>
     <div class="card">
-      <h2>Backup</h2>
-      <p>Rezepte als Datei sichern oder auf einem neuen Gerät wiederherstellen.</p>
-      <button class="btn" id="to-backup">Zu Backup</button>
+      <h2>${esc(t('backup'))}</h2>
+      <p>${esc(t('backupCardText'))}</p>
+      <button class="btn" id="to-backup">${esc(t('toBackup'))}</button>
     </div>`;
+  bindLangSwitch($app);
 
   // Name wird beim Tippen automatisch gesichert
   const $n = document.getElementById('name'), $p = document.getElementById('preview');
@@ -988,7 +1026,8 @@ async function viewSettings() {
   document.getElementById('back').onclick = () => go('#/');
   document.getElementById('to-backup').onclick = () => go('#/backup');
 
-  const hints = { meal: 'Zum Beispiel Frühstück, Hauptspeise oder Party.', cuisine: 'Zum Beispiel Italienisch, Asiatisch oder Omas Küche.' };
+  const hints = { meal: t('hintMeal'), cuisine: t('hintCuisine') };
+  const sameEntry = (x, v) => norm(x) === norm(v) || norm(catLabel(x)) === norm(v);
 
   async function drawList(kind) {
     const { field, label } = CAT[kind];
@@ -996,21 +1035,21 @@ async function viewSettings() {
     const recipes = await DB.all('recipes');
     const count = (v) => recipes.filter((r) => (r[field] || []).includes(v)).length;
     const el = document.getElementById('list-' + kind);
-    el.innerHTML = `<h2>${label}</h2><p>${hints[kind]} Änderungen gelten sofort, auch für bestehende Rezepte.</p>
+    el.innerHTML = `<h2>${esc(t(label))}</h2><p>${esc(hints[kind])} ${esc(t('listHint'))}</p>
       <ul class="cat-list">${list.map((v, i) => `<li>
-          <span class="cat-name">${esc(v)}<small>${count(v) ? plural(count(v), 'Rezept', 'Rezepte') : ''}</small></span>
-          <button class="icon-mini" data-a="up" data-i="${i}" aria-label="${esc(v)} nach oben" ${i ? '' : 'disabled'}>↑</button>
-          <button class="icon-mini" data-a="ren" data-i="${i}" aria-label="${esc(v)} umbenennen">✎</button>
-          <button class="icon-mini danger" data-a="del" data-i="${i}" aria-label="${esc(v)} löschen">✕</button>
+          <span class="cat-name">${esc(catLabel(v))}<small>${count(v) ? esc(t('nRecipes', count(v))) : ''}</small></span>
+          <button class="icon-mini" data-a="up" data-i="${i}" aria-label="${esc(t('moveUp', catLabel(v)))}" ${i ? '' : 'disabled'}>↑</button>
+          <button class="icon-mini" data-a="ren" data-i="${i}" aria-label="${esc(t('renameX', catLabel(v)))}">✎</button>
+          <button class="icon-mini danger" data-a="del" data-i="${i}" aria-label="${esc(t('deleteX', catLabel(v)))}">✕</button>
         </li>`).join('')}</ul>
-      <div class="inline-wide add-row"><input type="text" placeholder="Neuer Eintrag" maxlength="40" enterkeyhint="done">
-        <button class="btn slim add-btn" data-a="add" aria-label="Hinzufügen">+</button></div>
-      <button class="link reset-list" data-a="reset">Standardliste wiederherstellen</button>`;
+      <div class="inline-wide add-row"><input type="text" placeholder="${esc(t('newEntry'))}" maxlength="40" enterkeyhint="done">
+        <button class="btn slim add-btn" data-a="add" aria-label="${esc(t('add'))}">+</button></div>
+      <button class="link reset-list" data-a="reset">${esc(t('resetList'))}</button>`;
     const inp = el.querySelector('.add-row input');
     const add = async () => {
       const v = inp.value.trim();
       if (!v) return;
-      if (list.some((x) => norm(x) === norm(v))) { toast(`„${v}“ gibt es schon.`); return; }
+      if (list.some((x) => sameEntry(x, v))) { toast(t('exists', v)); return; }
       list.push(v); await setList(kind, list); drawList(kind);
       setTimeout(() => el.querySelector('.add-row input').focus(), 50);
     };
@@ -1023,10 +1062,11 @@ async function viewSettings() {
         case 'add': return add();
         case 'up': [list[i - 1], list[i]] = [list[i], list[i - 1]]; await setList(kind, list); return drawList(kind);
         case 'ren': {
-          const nv = await inputDialog(`„${v}“ umbenennen`, v, 'Umbenennen');
-          if (!nv || nv === v) return;
-          const dup = list.find((x, j) => j !== i && norm(x) === norm(nv));
-          if (dup && !(await confirmDialog('Zusammenführen?', `„${dup}“ gibt es schon. Rezepte mit „${v}“ bekommen dann „${dup}“.`, 'Zusammenführen'))) return;
+          const shown = catLabel(v);
+          const nv = await inputDialog(t('renameTitle', shown), shown, t('rename'));
+          if (!nv || nv === shown || nv === v) return;
+          const dup = list.find((x, j) => j !== i && sameEntry(x, nv));
+          if (dup && !(await confirmDialog(t('mergeQ'), t('mergeText', catLabel(dup), shown), t('merge')))) return;
           const target = dup || nv;
           if (dup) list.splice(i, 1); else list[i] = nv;
           await setList(kind, list);
@@ -1037,12 +1077,12 @@ async function viewSettings() {
             await DB.put('recipes', r);
           }
           await markDirty();
-          toast('Umbenannt.');
+          toast(t('renamed'));
           return drawList(kind);
         }
         case 'del': {
           const n = count(v);
-          if (n && !(await confirmDialog(`„${v}“ löschen?`, `Wird bei ${plural(n, 'Rezept', 'Rezepten')} entfernt. Die Rezepte selbst bleiben erhalten.`, 'Löschen', true))) return;
+          if (n && !(await confirmDialog(t('deleteCatQ', catLabel(v)), t('deleteCatText', n), t('del'), true))) return;
           list.splice(i, 1); await setList(kind, list);
           for (const r of recipes) {
             if (!(r[field] || []).includes(v)) continue;
@@ -1053,7 +1093,7 @@ async function viewSettings() {
           return drawList(kind);
         }
         case 'reset': {
-          if (!(await confirmDialog('Standardliste wiederherstellen?', 'Die Liste wird auf die ursprünglichen Einträge zurückgesetzt. Einträge, die in Rezepten verwendet werden, bleiben in der Liste.', 'Wiederherstellen'))) return;
+          if (!(await confirmDialog(t('resetQ'), t('resetText'), t('restore')))) return;
           const inUse = new Set(recipes.flatMap((r) => r[field] || []));
           const next = [...CAT[kind].defaults, ...list.filter((x) => inUse.has(x) && !CAT[kind].defaults.includes(x))];
           await setList(kind, next);
@@ -1112,9 +1152,9 @@ async function exportBackup() {
 
 async function importBackup(file) {
   let data;
-  try { data = JSON.parse(await file.text()); } catch (_) { throw new Error('Die Datei ist kein gültiges Rezepte-Backup.'); }
-  if (data.app !== 'rezepte' || !Array.isArray(data.recipes)) throw new Error('Die Datei ist kein Rezepte-Backup.');
-  if (data.schema > SCHEMA) throw new Error('Das Backup stammt von einer neueren App-Version. Bitte zuerst die App aktualisieren.');
+  try { data = JSON.parse(await file.text()); } catch (_) { throw new Error(t('invalidFile')); }
+  if (data.app !== 'rezepte' || !Array.isArray(data.recipes)) throw new Error(t('notBackup'));
+  if (data.schema > SCHEMA) throw new Error(t('newerVersion'));
   if (data.settings && data.settings.ownerName && !(await DB.getMeta('ownerName', ''))) {
     await DB.setMeta('ownerName', data.settings.ownerName);
     applyTitle(data.settings.ownerName);
@@ -1153,29 +1193,29 @@ async function viewBackup() {
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
 
   $app.innerHTML = `
-    <div class="bar"><button class="link" id="back">‹ Rezepte</button><span class="bar-title">Backup</span><span style="width:60px"></span></div>
+    <div class="bar"><button class="link" id="back">‹ ${esc(t('recipes'))}</button><span class="bar-title">${esc(t('backup'))}</span><span style="width:60px"></span></div>
     <div class="card">
-      <h2>Backup erstellen</h2>
-      <p>Alle ${plural(recipes.length, 'Rezept', 'Rezepte')} mit Fotos (ca. ${Math.max(1, Math.round(bytes * 1.37 / 1024 / 1024 * 10) / 10).toLocaleString('de-AT')} MB) als eine Datei. Im Teilen-Menü „In Dateien sichern“ wählen und iCloud Drive als Ort nehmen.</p>
-      <p class="status">${lastBackup ? `Letztes Backup: ${fmtDate(lastBackup)}${dirty ? ', seitdem gab es Änderungen.' : ', seitdem unverändert.'}` : 'Noch kein Backup erstellt.'}</p>
-      <button class="btn primary" id="export" ${recipes.length ? '' : 'disabled'}>Backup erstellen</button>
+      <h2>${esc(t('createBackup'))}</h2>
+      <p>${esc(t('createText', recipes.length, Math.max(1, Math.round(bytes * 1.37 / 1024 / 1024 * 10) / 10).toLocaleString(fmtLocale())))}</p>
+      <p class="status">${esc(lastBackup ? t('lastBackupStatus', fmtDate(lastBackup), dirty) : t('noBackupCreated'))}</p>
+      <button class="btn primary" id="export" ${recipes.length ? '' : 'disabled'}>${esc(t('createBackup'))}</button>
     </div>
     <div class="card">
-      <h2>Backup einspielen</h2>
-      <p>Für ein neues Handy oder zum Wiederherstellen. Vorhandene Rezepte bleiben erhalten; bei gleichen Rezepten gewinnt die neuere Fassung.</p>
-      <label class="btn" style="display:grid;place-items:center">Backup-Datei auswählen
+      <h2>${esc(t('restoreBackup'))}</h2>
+      <p>${esc(t('restoreText'))}</p>
+      <label class="btn" style="display:grid;place-items:center">${esc(t('chooseFile'))}
         <input type="file" id="import" accept=".json,application/json" hidden></label>
     </div>
-    ${standalone ? '' : `<div class="card"><h2>Zum Home-Bildschirm hinzufügen</h2>
-      <p>In Safari auf Teilen tippen, dann „Zum Home-Bildschirm“. So startet die App wie eine normale App, funktioniert offline und iOS löscht die Daten nicht nach längerer Nichtbenutzung.</p></div>`}`;
+    ${standalone ? '' : `<div class="card"><h2>${esc(t('homeTitle'))}</h2>
+      <p>${esc(t('homeText'))}</p></div>`}`;
 
   document.getElementById('back').onclick = () => go('#/');
   document.getElementById('export').onclick = async (e) => {
     e.target.disabled = true;
     try {
-      if (await exportBackup()) { toast('Backup erstellt.'); viewBackup(); }
+      if (await exportBackup()) { toast(t('backupDone')); viewBackup(); }
     } catch (err) {
-      toast('Backup fehlgeschlagen: ' + err.message);
+      toast(t('backupFailed', err.message));
     } finally { e.target.disabled = false; }
   };
   document.getElementById('import').onchange = async (e) => {
@@ -1183,7 +1223,7 @@ async function viewBackup() {
     if (!f) return;
     try {
       const res = await importBackup(f);
-      toast(`${res.added} neu, ${res.updated} aktualisiert, ${res.kept} unverändert.`);
+      toast(t('importResult', res.added, res.updated, res.kept));
       viewBackup();
     } catch (err) {
       toast(err.message);
@@ -1197,8 +1237,13 @@ async function viewBackup() {
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
-DB.getMeta('ownerName', '').then(applyTitle).catch(() => {});
-migrate().catch(() => {}).then(route);
+LANG = detectLang();
+document.documentElement.lang = LANG;
+DB.getMeta('lang').then((l) => { if (l in LANGS) { LANG = l; document.documentElement.lang = l; } })
+  .then(() => DB.getMeta('ownerName', '')).then(applyTitle)
+  .catch(() => {})
+  .then(() => migrate().catch(() => {}))
+  .then(route);
 
 // Für Tests
-window.__rezepte = { bookTitle, parseIngredientLine, scaleAmount, renderIngredient, parseSteps, recipeText };
+window.__rezepte = { setLang, t, bookTitle, parseIngredientLine, scaleAmount, renderIngredient, parseSteps, recipeText };

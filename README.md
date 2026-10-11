@@ -1,4 +1,4 @@
-# Rezepte – Phase 2.2
+# Rezepte – Phase 2.3
 
 Persönliches Rezeptbuch als PWA. Keine Abhängigkeiten, kein Build-Schritt.
 
@@ -28,6 +28,12 @@ Das Datenmodell enthält die Phase-2-Felder (Quelle, Ort, Bewertung, Tags, Küch
 - Art und Küche als Mehrfachauswahl
 - Listen für Art und Küche in den Einstellungen: hinzufügen, umbenennen, löschen, sortieren, Standard wiederherstellen
 - Umbenennen/Löschen wirkt sofort auf bestehende Rezepte; Listen sind im Backup enthalten
+
+## Neu in Phase 2.3
+- Dreisprachig: Deutsch, Englisch, Italienisch – Umschalter (DE · EN · IT) oben links in der Übersicht und in den Einstellungen; die Wahl wird gespeichert, beim ersten Start gilt die Gerätesprache
+- Standard-Einträge für Art und Küche sowie Einheiten werden in der gewählten Sprache angezeigt (gespeichert bleibt alles wie bisher, Backups sind kompatibel)
+- Zutaten verstehen auch englische und italienische Einheiten (`2 tbsp`, `1 cucchiaino`, `2 spicchi` …)
+- Texte liegen in `i18n.js`
 
 ## Zutaten-Eingabe
 Eine Zutat pro Zeile, Menge zuerst: `200 g Mehl`, `2 Eier`, `1/2 TL Salz`, `1,5 l Milch`, `2-3 Zehen Knoblauch`, `Salz, Pfeffer`.

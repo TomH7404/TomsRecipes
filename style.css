@@ -352,3 +352,14 @@ dialog.sheet h4 { font: 600 15px var(--sans); margin: 18px 0 8px; }
 .card .add-row .btn { width: auto; flex: none; }
 .add-row input { flex: 1 1 auto; }
 .add-btn { font-size: 24px; width: 52px !important; padding: 0; }
+
+/* ================= Sprache ================= */
+.lang-switch {
+  display: inline-flex; padding: 2px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface);
+}
+.lang-switch button {
+  min-width: 38px; min-height: 32px; padding: 0 8px; border: 0; border-radius: 8px;
+  background: none; color: var(--muted); font-size: 13px; font-weight: 600; letter-spacing: .03em; cursor: pointer;
+}
+.lang-switch button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
